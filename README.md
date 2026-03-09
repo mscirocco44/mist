@@ -58,9 +58,12 @@ Step-by-step Deployment
 	```bash
 	chmod +x scripts/*.sh
 	```
-3. Run server autodeploy (optionally pass a hosts file listing client hostnames/IPs):
+3. Run server autodeploy (optionally pass a hosts file listing
+   client hostnames/IPs and select which components to enable):
 	```bash
-	sudo ./scripts/autodeploy-server.sh configs/hosts.txt
+	sudo ./scripts/autodeploy-server.sh --only-prometheus configs/hosts.txt
+	# or enable everything:
+	sudo ./scripts/autodeploy-server.sh --with-loki --with-tempo configs/hosts.txt
 	```
 	- `configs/hosts.txt` should list client IPs/hostnames, one per line.
 
@@ -100,7 +103,14 @@ Troubleshooting & Verification
 ---
 Upgrade/Update
 --------------
-- To upgrade any component, replace the RPM/tarball in `downloads/` and re-run the setup/autodeploy script.
+- To upgrade any component, replace the RPM/tarball in `downloads/` and re-run the setup/autodeploy script.  You can also use the `--update` flag to load a new image and restart a specific service, for example:
+
+```
+sudo ./scripts/deploy-server.sh --update prometheus    # reload prom image
+sudo ./scripts/deploy-server.sh --update all         # reload everything
+```
+
+- All containers in the compose file are configured with `restart: unless-stopped`, and rootless Docker is enabled for the `svc_mist` user with lingering turned on.  That means the Docker daemon will start at boot and automatically restart the containers even if you don’t re-run the installer.  You don’t need a separate boot‑time job; simply ensure the `svc_mist` user is allowed to linger (the script already does this).
 Mist — automated observability deployment
 
 Overview
@@ -116,10 +126,15 @@ Quick start (server)
 	```bash
 	chmod +x scripts/deploy-server.sh
 	```
-2. Run server deploy (optionally pass a hosts file listing client hostnames/IPs):
+2. Run server deploy (optionally pass a hosts file listing client hostnames/IPs
+   and choose which services to start):
 	```bash
-	sudo ./scripts/deploy-server.sh configs/hosts.txt
+	sudo ./scripts/deploy-server.sh --only-prometheus          # just Prometheus (Grafana and others omitted)
+	sudo ./scripts/deploy-server.sh --with-loki --with-tempo  # enable Loki/Tempo in addition to Prometheus/Grafana
 	```
+	- Services are controlled by Docker Compose profiles; `prometheus` and
+	  `grafana` are always started, while Loki and Tempo only run when the
+	  corresponding `--with-*` flag is provided.
 	- `configs/hosts.txt` should list client IPs/hostnames, one per line.
 
 Quick start (client)

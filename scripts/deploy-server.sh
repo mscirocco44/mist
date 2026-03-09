@@ -2,9 +2,55 @@
 set -euo pipefail
 # deploy-server.sh: Complete Mist server setup and deployment
 
-# Usage: ./deploy-server.sh [hosts_file]
+# Usage: ./deploy-server.sh [options] [hosts_file]
+#   --with-loki            enable Loki (disabled by default)
+#   --with-tempo           enable Tempo (disabled by default)
+#   --only-prometheus      install/prometheus only (disables loki and tempo)
+#   --update [component]   load updated image(s) and restart component(s)
+#                          component = prometheus|grafana|loki|tempo|all
+#   hosts_file             optional path containing client IPs/hostnames
 
-HOSTS_FILE="$1"
+# parse arguments -----------------------------------------------------------
+USE_PROMETHEUS=yes
+# Grafana is always installed
+USE_GRAFANA=yes
+USE_LOKI=no
+USE_TEMPO=no
+ACTION=install      # install or update
+COMP_TO_UPDATE=all  # used when ACTION=update
+HOSTS_FILE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --with-loki)
+            USE_LOKI=yes
+            ;;
+        --with-tempo)
+            USE_TEMPO=yes
+            ;;
+        --only-prometheus|--only-prom)
+            USE_LOKI=no
+            USE_TEMPO=no
+            ;;
+        --update)
+            ACTION=update
+            if [ -n "$2" ] && [[ "$2" != --* ]]; then
+                COMP_TO_UPDATE="$2"
+                shift
+            fi
+            ;;
+        --help|-h)
+            sed -n '1,20p' "$0"
+            exit 0
+            ;;
+        *)
+            # treat as hosts file if not already set
+            [ -z "$HOSTS_FILE" ] && HOSTS_FILE="$1" || true
+            ;;
+    esac
+    shift
+done
+
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DOWNLOAD_DIR="$BASE_DIR/downloads"
 MIST_DIR="/opt/mist-server"
@@ -16,8 +62,14 @@ read -p "Select the number of the interface/IP to use for this server: " NIC_CHO
 SELECTED_IP=$(ip -o -4 addr show | awk -v n="$NIC_CHOICE" 'NR==n {print $4}' | cut -d'/' -f1)
 echo "Selected IP: $SELECTED_IP"
 
-# Check downloads
-for file in containerd.io*.rpm docker-ce*.rpm docker-ce-cli*.rpm docker-compose-plugin*.rpm prometheus.tar grafana.tar loki.tar tempo.tar; do
+# Check downloads (required packages and any enabled images)
+files=(containerd.io*.rpm docker-ce*.rpm docker-ce-cli*.rpm docker-compose-plugin*.rpm)
+[ "$USE_PROMETHEUS" = yes ] && files+=("prometheus.tar")
+# grafana always enabled
+files+=("grafana.tar")
+[ "$USE_LOKI" = yes ] && files+=("loki.tar")
+[ "$USE_TEMPO" = yes ] && files+=("tempo.tar")
+for file in "${files[@]}"; do
   [ -f "$DOWNLOAD_DIR/$file" ] || { echo "Missing $file"; exit 1; }
 done
 
@@ -56,26 +108,90 @@ fi
 
 loginctl enable-linger svc_mist || true
 
-# Load images
-su - svc_mist -s /bin/bash <<LOAD
-docker load -i $DOWNLOAD_DIR/prometheus.tar || true
+# runtime directory used by rootless docker
+XDG_RUNTIME_DIR="/run/user/$SVC_UID"
+
+# if the caller asked only for an update, perform that and exit early
+if [ "$ACTION" = update ]; then
+  echo "Performing update for component '$COMP_TO_UPDATE'"
+  # load images as needed
+  if [ "$COMP_TO_UPDATE" = prometheus ] || [ "$COMP_TO_UPDATE" = all ]; then
+    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/prometheus.tar || true"
+  fi
+  if [ "$COMP_TO_UPDATE" = grafana ] || [ "$COMP_TO_UPDATE" = all ]; then
+    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/grafana.tar || true"
+  fi
+  if [ "$COMP_TO_UPDATE" = loki ] || [ "$COMP_TO_UPDATE" = all ]; then
+    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/loki.tar || true"
+  fi
+  if [ "$COMP_TO_UPDATE" = tempo ] || [ "$COMP_TO_UPDATE" = all ]; then
+    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/tempo.tar || true"
+  fi
+
+  # restart/bring up requested services
+  PROFILE_ARGS=""
+  # grafana always enabled
+  PROFILE_ARGS="$PROFILE_ARGS --profile grafana"
+  [ "$USE_LOKI" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile loki"
+  [ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
+  if [ "$COMP_TO_UPDATE" != all ]; then
+    SERVICE_ARG="$COMP_TO_UPDATE"
+  else
+    SERVICE_ARG=""
+  fi
+  su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d $SERVICE_ARG"
+  echo "Update finished."
+  exit 0
+fi
+
+# Load images (install/initial run)
+su - svc_mist -s /bin/bash <<'LOAD'
+[ "$USE_PROMETHEUS" = yes ] && docker load -i $DOWNLOAD_DIR/prometheus.tar || true
+# grafana always installed
 docker load -i $DOWNLOAD_DIR/grafana.tar || true
-docker load -i $DOWNLOAD_DIR/loki.tar || true
-docker load -i $DOWNLOAD_DIR/tempo.tar || true
+[ "$USE_LOKI" = yes ] && docker load -i $DOWNLOAD_DIR/loki.tar || true
+[ "$USE_TEMPO" = yes ] && docker load -i $DOWNLOAD_DIR/tempo.tar || true
 LOAD
 
-# Setup dir and copy templates
-mkdir -p $MIST_DIR/{prometheus,loki,tempo}
+# compute profile arguments for later use (used both in install and updates)
+PROFILE_ARGS=""
+# grafana always enabled
+PROFILE_ARGS="$PROFILE_ARGS --profile grafana"
+[ "$USE_LOKI" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile loki"
+[ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
+
+# Setup directories and copy only the templates needed for enabled components
+mkdir -p $MIST_DIR
 chown -R svc_mist:svc_mist $MIST_DIR
 restorecon -Rv $MIST_DIR
 
 [ -f "$MIST_DIR/docker-compose.yml" ] || cp $BASE_DIR/configs/docker-compose.yml.template $MIST_DIR/docker-compose.yml
-[ -f "$MIST_DIR/loki/loki-config.yaml" ] || cp $BASE_DIR/configs/loki-config.yaml.template $MIST_DIR/loki/loki-config.yaml
-[ -f "$MIST_DIR/tempo/tempo-config.yaml" ] || cp $BASE_DIR/configs/tempo-config.yaml.template $MIST_DIR/tempo/tempo-config.yaml
 
-# Firewalld
-for port in 9090 3000 3100 3200 4317; do
+# prometheus is always present (USE_PROMETHEUS default yes)
+if [ "$USE_PROMETHEUS" = yes ]; then
+  mkdir -p $MIST_DIR/prometheus
+  [ -f "$MIST_DIR/prometheus/prometheus.yml" ] && : || cp $BASE_DIR/configs/prometheus.yml.template "$MIST_DIR/prometheus/prometheus.yml"
+fi
+
+if [ "$USE_LOKI" = yes ]; then
+  mkdir -p $MIST_DIR/loki
+  [ -f "$MIST_DIR/loki/loki-config.yaml" ] || cp $BASE_DIR/configs/loki-config.yaml.template $MIST_DIR/loki/loki-config.yaml
+fi
+
+if [ "$USE_TEMPO" = yes ]; then
+  mkdir -p $MIST_DIR/tempo
+  [ -f "$MIST_DIR/tempo/tempo-config.yaml" ] || cp $BASE_DIR/configs/tempo-config.yaml.template $MIST_DIR/tempo/tempo-config.yaml
+fi
+
+# Firewalld – open only ports for enabled services
+ports="9090 3000"                         # prometheus + grafana
+[ "$USE_LOKI" = yes ] && ports="$ports 3100"
+if [ "$USE_TEMPO" = yes ]; then
+  ports="$ports 3200 4317"
+fi
+for port in $ports; do
   firewall-cmd --permanent --query-port=$port/tcp >/dev/null || firewall-cmd --permanent --add-port=$port/tcp
+
 done
 firewall-cmd --reload
 
@@ -105,6 +221,6 @@ fi
 XDG_RUNTIME_DIR="/run/user/$SVC_UID"
 mkdir -p "$XDG_RUNTIME_DIR"
 chown svc_mist:svc_mist "$XDG_RUNTIME_DIR" || true
-su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR && cd $MIST_DIR && docker compose up -d"
+su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR && cd $MIST_DIR && docker compose up -d $PROFILE_ARGS"
 
 echo "Server deployment complete."

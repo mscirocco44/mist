@@ -2,24 +2,35 @@ version: "3.8"
 services:
   prometheus:
     image: prom/prometheus:latest
+    restart: unless-stopped
     volumes:
       - ./prometheus:/etc/prometheus
     ports:
       - "9090:9090"
+
+  # Grafana is always deployed as part of the stack.
   grafana:
     image: grafana/grafana:latest
+    restart: unless-stopped
     volumes:
       - ./grafana:/var/lib/grafana
     ports:
       - "3000:3000"
+
+  # Loki and Tempo are also profile‑gated so they only start when enabled.
   loki:
+    profiles: ["loki"]
     image: grafana/loki:2.8.2
+    restart: unless-stopped
     volumes:
       - ./loki:/etc/loki
     ports:
       - "3100:3100"
+
   tempo:
+    profiles: ["tempo"]
     image: grafana/tempo:1.5.0
+    restart: unless-stopped
     volumes:
       - ./tempo:/etc/tempo
     ports:
