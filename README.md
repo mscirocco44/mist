@@ -47,6 +47,20 @@ Grafana dashboard JSON files are also committed to `downloads/dashboards/` in
 this repo, so they are available immediately after cloning without running the
 download script.
 
+**Creating an all-in-one bundle for distribution:**
+
+Once `download-deps.sh` has run, package everything into a single tarball and
+upload it to a GitHub Release so others can download one file and deploy:
+
+```bash
+./scripts/create-bundle.sh v1.0.0
+gh release create v1.0.0 --title "Mist v1.0.0"
+gh release upload v1.0.0 mist-bundle-v1.0.0.tar.gz
+```
+
+Anyone with access to the release downloads one file, extracts it, and runs the
+deploy scripts — no internet required on the target machine.
+
 ---
 Ports Opened
 ------------
