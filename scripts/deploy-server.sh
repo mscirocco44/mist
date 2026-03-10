@@ -2,6 +2,21 @@
 set -euo pipefail
 # deploy-server.sh: Complete Mist server setup and deployment
 
+# must be root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: this installer must be run as root (use sudo or login as root)" >&2
+    exit 1
+fi
+
+log() {
+    printf '%s %s\n' "$(date '+%F %T')" "$*"
+}
+
+error_exit() {
+    log "ERROR: $*" >&2
+    exit 1
+}
+
 # Usage: ./deploy-server.sh [options] [hosts_file]
 #   --with-loki            enable Loki (disabled by default)
 #   --with-tempo           enable Tempo (disabled by default)
@@ -67,23 +82,36 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Determine the directory containing this script; do not rely on $PWD
+# so that the installer works no matter where you invoke it from.  Using
+# BASH_SOURCE is slightly more reliable when the script is sourced, but we
+# always execute it directly.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOWNLOAD_DIR="$BASE_DIR/downloads"
+
+log "Base directory resolved to $BASE_DIR"
+if [ ! -d "$DOWNLOAD_DIR" ]; then
+    error_exit "downloads directory not found under $BASE_DIR.\n"\
+               "Are you running the script from the top‑level of the unzipped repo?\n"\
+               "Current working dir: $(pwd)"
+fi
 MIST_DIR="/opt/mist-server"
 
 # NIC/IP selection
+log "Querying available network interfaces and IP addresses"
 echo "Available network interfaces and IP addresses:"
 ip -o -4 addr show | awk '{print NR ". " $2 " - " $4}'
 read -p "Select the number of the interface/IP to use for this server: " NIC_CHOICE
 SELECTED_IP=$(ip -o -4 addr show | awk -v n="$NIC_CHOICE" 'NR==n {print $4}' | cut -d'/' -f1)
-echo "Selected IP: $SELECTED_IP"
+log "Selected IP: $SELECTED_IP"
 
 # note: this installer is offline‑first and does not require network
 # connectivity; all required packages and images must live in the
 # downloads/ directory.  any network access is ignored.
 
 # Check downloads (required packages and any enabled images)
-# this script runs in offline mode only: every pattern must match.
+# this script runs in offline mode only: every pattern must match and be readable.
 patterns=(containerd.io*.rpm docker-ce*.rpm docker-ce-cli*.rpm docker-compose-plugin*.rpm)
 [ "$USE_PROMETHEUS" = yes ] && patterns+=("prometheus.tar")
 # grafana always enabled
@@ -95,9 +123,13 @@ shopt -s nullglob
 for pat in "${patterns[@]}"; do
   matches=("$DOWNLOAD_DIR"/$pat)
   if [ ${#matches[@]} -eq 0 ]; then
-    echo "Missing $pat" >&2
-    exit 1
+    error_exit "Missing required file pattern: $pat in $DOWNLOAD_DIR"
   fi
+  for f in "${matches[@]}"; do
+      if [ ! -r "$f" ]; then
+          error_exit "Cannot read required file: $f"
+      fi
+  done
 done
 shopt -u nullglob
 
@@ -107,7 +139,7 @@ shopt -u nullglob
 # the script will abort and expect you to install them yourself (you may
 # use RPMs from the downloads/ directory to do so).
 
-required_pkgs=(firewalld wget curl git)
+required_pkgs=(firewalld wget curl)
 missing=()
 for pkg in "${required_pkgs[@]}"; do
     if ! rpm -q "$pkg" >/dev/null 2>&1; then
@@ -133,10 +165,11 @@ id svc_mist &>/dev/null || useradd --system --no-create-home --shell /sbin/nolog
 # Docker install
 if ! rpm -q docker-ce >/dev/null; then
   # always install from local downloads
-  dnf localinstall -y $DOWNLOAD_DIR/containerd.io*.rpm $DOWNLOAD_DIR/docker-ce*.rpm $DOWNLOAD_DIR/docker-ce-cli*.rpm $DOWNLOAD_DIR/docker-compose-plugin*.rpm || { echo "Docker install failed"; exit 1; }
-  echo "Installed Docker packages from downloads"
+  rpm_paths=("$DOWNLOAD_DIR"/containerd.io*.rpm "$DOWNLOAD_DIR"/docker-ce*.rpm "$DOWNLOAD_DIR"/docker-ce-cli*.rpm "$DOWNLOAD_DIR"/docker-compose-plugin*.rpm)
+  dnf localinstall -y "${rpm_paths[@]}" || error_exit "Docker install failed"
+  log "Installed Docker packages from downloads"
 else
-  echo "Docker already installed; skipping"
+  log "Docker already installed; skipping"
 fi
 
 # Rootless Docker setup
