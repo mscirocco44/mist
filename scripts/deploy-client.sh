@@ -120,7 +120,7 @@ FIREWALL_CHANGED=0
 # Create svc_mist service user
 if ! id svc_mist &>/dev/null; then
     useradd --system --home-dir /home/svc_mist --create-home \
-            --shell /sbin/nologin svc_mist
+            --shell /bin/bash svc_mist
 else
     mkdir -p /home/svc_mist
     chown svc_mist:svc_mist /home/svc_mist

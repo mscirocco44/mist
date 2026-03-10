@@ -139,7 +139,7 @@ shopt -u nullglob
 # the script will abort and expect you to install them yourself (you may
 # use RPMs from the downloads/ directory to do so).
 
-required_pkgs=(firewalld wget curl)
+required_pkgs=(firewalld wget curl slirp4netns)
 missing=()
 for pkg in "${required_pkgs[@]}"; do
     if ! rpm -q "$pkg" >/dev/null 2>&1; then
@@ -149,9 +149,9 @@ done
 if [ ${#missing[@]} -gt 0 ]; then
     echo "Prerequisite packages missing: ${missing[*]}" >&2
     echo "Please install them before running this script." >&2
-    echo "You can copy the corresponding RPMs into $DOWNLOAD_DIR (e.g." >&2
-    echo "$DOWNLOAD_DIR/firewalld*.rpm, $DOWNLOAD_DIR/wget*.rpm) and then" >&2
+    echo "You can copy the corresponding RPMs into $DOWNLOAD_DIR and then" >&2
     echo "run 'dnf localinstall -y <rpm>' manually." >&2
+    echo "Note: slirp4netns is required for rootless Docker port forwarding." >&2
     exit 1
 fi
 
@@ -166,7 +166,7 @@ restorecon -Rv /opt /etc /var
 # can be run without a separate daemon.
 if ! id svc_mist &>/dev/null; then
     useradd --system --home-dir /home/svc_mist --create-home \
-            --shell /sbin/nologin svc_mist
+            --shell /bin/bash svc_mist
 else
     mkdir -p /home/svc_mist
     chown svc_mist:svc_mist /home/svc_mist
@@ -229,7 +229,7 @@ DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
 
 if [ ! -S "$XDG_RUNTIME_DIR/docker.sock" ]; then
     log "running rootless Docker setup for svc_mist"
-    su - svc_mist -s /bin/bash <<'ROOTLESS'
+    su - svc_mist <<'ROOTLESS'
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
 # ensure runtime dir exists and is owned by the user
@@ -262,19 +262,19 @@ if [ "$ACTION" = update ]; then
   # Stage and load images; copy only what is needed for this update.
   if [ "$COMP_TO_UPDATE" = prometheus ] || [ "$COMP_TO_UPDATE" = all ]; then
     cp "$DOWNLOAD_DIR/prometheus.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/prometheus.tar"
-    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/prometheus.tar || true"
+    su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/prometheus.tar || true"
   fi
   if [ "$COMP_TO_UPDATE" = grafana ] || [ "$COMP_TO_UPDATE" = all ]; then
     cp "$DOWNLOAD_DIR/grafana.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/grafana.tar"
-    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/grafana.tar || true"
+    su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/grafana.tar || true"
   fi
   if [ "$COMP_TO_UPDATE" = loki ] || [ "$COMP_TO_UPDATE" = all ]; then
     cp "$DOWNLOAD_DIR/loki.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/loki.tar"
-    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/loki.tar || true"
+    su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/loki.tar || true"
   fi
   if [ "$COMP_TO_UPDATE" = tempo ] || [ "$COMP_TO_UPDATE" = all ]; then
     cp "$DOWNLOAD_DIR/tempo.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/tempo.tar"
-    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/tempo.tar || true"
+    su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/tempo.tar || true"
   fi
 
   # restart/bring up requested services
@@ -288,17 +288,15 @@ if [ "$ACTION" = update ]; then
   else
     SERVICE_ARG=""
   fi
-  if ! su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker compose version >/dev/null 2>&1"; then
-    error_exit "svc_mist cannot invoke docker compose during update; rootless daemon not operational"
-  fi
-  su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d $SERVICE_ARG"
+  systemctl restart mist-server || \
+    su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d $SERVICE_ARG"
   echo "Update finished."
   exit 0
 fi
 
 # Load images (install/initial run) from tarballs only.  If svc_mist
 # cannot talk to Docker at this point something is wrong with rootless.
-if ! su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker version >/dev/null 2>&1"; then
+if ! su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker version >/dev/null 2>&1"; then
     error_exit "svc_mist cannot access Docker daemon after rootless setup"
 fi
 # Copy tarballs to staging dir so svc_mist can read them regardless of the
@@ -308,7 +306,7 @@ cp "$DOWNLOAD_DIR/grafana.tar" "$IMAGE_STAGE_DIR/"
 [ "$USE_LOKI" = yes ] && cp "$DOWNLOAD_DIR/loki.tar" "$IMAGE_STAGE_DIR/"
 [ "$USE_TEMPO" = yes ] && cp "$DOWNLOAD_DIR/tempo.tar" "$IMAGE_STAGE_DIR/"
 chown svc_mist:svc_mist "$IMAGE_STAGE_DIR"/*.tar
-su - svc_mist -s /bin/bash <<LOAD
+su - svc_mist <<LOAD
 export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR
 export DOCKER_HOST=$DOCKER_HOST
 [ "$USE_PROMETHEUS" = yes ] && docker load -i $IMAGE_STAGE_DIR/prometheus.tar || true
@@ -380,13 +378,40 @@ else
   chown svc_mist:svc_mist "$PROM_YML" || true
 fi
 
-# Start Docker Compose as svc_mist.  At this point rootless Docker must
-# be functional; treat any failure as fatal.
+# Verify docker compose is reachable before creating the service
 mkdir -p "$XDG_RUNTIME_DIR"
 chown svc_mist:svc_mist "$XDG_RUNTIME_DIR" || true
-if ! su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker compose version >/dev/null 2>&1"; then
+if ! su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker compose version >/dev/null 2>&1"; then
     error_exit "svc_mist cannot invoke docker compose; rootless daemon not operational"
 fi
-su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d"
+
+# Create a system-level service so root can manage the stack with systemctl.
+# The unit runs as svc_mist but lives in the system service manager, meaning
+# 'systemctl status/start/stop/restart mist-server' works for any admin.
+cat > /etc/systemd/system/mist-server.service <<UNIT
+[Unit]
+Description=Mist observability stack (Prometheus, Grafana, etc.)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=svc_mist
+Group=svc_mist
+Environment=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR
+Environment=DOCKER_HOST=$DOCKER_HOST
+WorkingDirectory=$MIST_DIR
+ExecStart=/usr/bin/docker compose $PROFILE_ARGS up
+ExecStop=/usr/bin/docker compose $PROFILE_ARGS down
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now mist-server
 
 echo "Server deployment complete."
+echo "Manage the stack with: systemctl status|start|stop|restart mist-server"

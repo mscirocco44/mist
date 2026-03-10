@@ -1,3 +1,18 @@
+Mist — Air-Gapped Observability Stack
+======================================
+
+Mist is an automated deployment toolkit for a self-contained observability stack
+in air-gapped or offline environments. It sets up Prometheus, Grafana, Loki, and
+Tempo on a central server, and deploys Node Exporter, Alloy (log/metrics agent),
+and optionally the OpenTelemetry Collector on client nodes — all from local files
+with zero network access required.
+
+- **Server**: Prometheus + Grafana (always), Loki and Tempo (optional)
+- **Client**: Node Exporter + Alloy (always), OTel Collector (optional, with `--with-tempo`)
+- All components run as the `svc_mist` service user; server stack runs in rootless Docker
+- Managed via systemd: `mist-server`, `mist-alloy`, `mist-node-exporter`, `mist-otelcol`
+
+---
 Prerequisites & Required Downloads
 -----------------------------------
 This project is designed for air‑gapped environments.  Before running any
@@ -8,6 +23,9 @@ installed:
 - `wget`, `curl`, and `git` (used by the scripts and helpers);
   if you store RPMs in the repo they are tracked with Git LFS – remember to run
   `git lfs pull` after cloning or copy the binaries into `downloads/` manually.
+
+- `slirp4netns` (**server only** — required for rootless Docker port forwarding;
+  without it containers start but ports are unreachable from the host).
 
 If these packages are not present the scripts will abort and you'll need to
 install them manually; you can copy their RPMs into `downloads/` and run
@@ -113,10 +131,14 @@ How to Edit Dashboards
 Troubleshooting & Verification
 -----------------------------
 **Server:**
+- Check stack status: `systemctl status mist-server`
+- Restart stack: `systemctl restart mist-server`
+- View logs: `journalctl -u mist-server -f`
 - Prometheus UI: `http://<server>:9090/targets` (client targets should be listed)
 - Grafana: `http://<server>:3000`
 - Loki: `http://<server>:3100`
 - Tempo: `http://<server>:3200`
+- If ports are unreachable, verify `slirp4netns` is installed: `rpm -q slirp4netns`
 
 **Client:**
 - Node exporter metrics: `curl http://localhost:9100/metrics | head -n 20`
