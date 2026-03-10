@@ -92,8 +92,8 @@ DOWNLOAD_DIR="$BASE_DIR/downloads"
 
 log "Base directory resolved to $BASE_DIR"
 if [ ! -d "$DOWNLOAD_DIR" ]; then
-    error_exit "downloads directory not found under $BASE_DIR.\n"\
-               "Are you running the script from the top‑level of the unzipped repo?\n"\
+    error_exit "downloads directory not found under $BASE_DIR." \
+               "Are you running the script from the top-level of the unzipped repo?" \
                "Current working dir: $(pwd)"
 fi
 MIST_DIR="/opt/mist-server"
@@ -106,7 +106,7 @@ read -p "Select the number of the interface/IP to use for this server: " NIC_CHO
 SELECTED_IP=$(ip -o -4 addr show | awk -v n="$NIC_CHOICE" 'NR==n {print $4}' | cut -d'/' -f1)
 log "Selected IP: $SELECTED_IP"
 
-# note: this installer is offline‑first and does not require network
+# note: this installer is offline-first and does not require network
 # connectivity; all required packages and images must live in the
 # downloads/ directory.  any network access is ignored.
 
@@ -133,7 +133,7 @@ for pat in "${patterns[@]}"; do
 done
 shopt -u nullglob
 
-# System prep – offline behaviour.  this script will not contact any
+# System prep - offline behaviour.  this script will not contact any
 # remote repository.  it assumes the base OS is already functional; the
 # only additional packages it needs are listed below.  if any are missing
 # the script will abort and expect you to install them yourself (you may
@@ -159,8 +159,40 @@ systemctl enable --now firewalld || true
 setenforce 1
 restorecon -Rv /opt /etc /var
 
-# Create svc_mist
-id svc_mist &>/dev/null || useradd --system --no-create-home --shell /sbin/nologin svc_mist
+# Create svc_mist (ensure there is a home directory because later
+# we use "su - svc_mist" for rootless Docker setup).  The home itself
+# isn't important but providing one avoids warnings and permission issues.
+# Also add the user to the 'docker' group so that rootful Docker commands
+# can be run without a separate daemon.
+if ! id svc_mist &>/dev/null; then
+    useradd --system --home-dir /home/svc_mist --create-home \
+            --shell /sbin/nologin svc_mist
+else
+    mkdir -p /home/svc_mist
+    chown svc_mist:svc_mist /home/svc_mist
+fi
+if getent group docker >/dev/null; then
+    usermod -aG docker svc_mist || true
+fi
+
+# prepare runtime directory now so permissions are correct
+SVC_UID=$(id -u svc_mist)
+mkdir -p "/run/user/$SVC_UID"
+chown svc_mist:svc_mist "/run/user/$SVC_UID" || true
+chmod 700 "/run/user/$SVC_UID"
+
+# Staging directory for image tarballs: svc_mist needs to read them but may
+# not be able to traverse the caller's home directory (mode 700).  Use a
+# location under /opt that we control; clean it up on any exit.
+IMAGE_STAGE_DIR="/opt/mist-images-stage"
+rm -rf "$IMAGE_STAGE_DIR"
+mkdir -p "$IMAGE_STAGE_DIR"
+chown svc_mist:svc_mist "$IMAGE_STAGE_DIR"
+chmod 700 "$IMAGE_STAGE_DIR"
+trap 'rm -rf "$IMAGE_STAGE_DIR"' EXIT
+
+# ensure lingering so the user bus can start later
+loginctl enable-linger svc_mist || true
 
 # Docker install
 if ! rpm -q docker-ce >/dev/null; then
@@ -172,47 +204,83 @@ else
   log "Docker already installed; skipping"
 fi
 
-# Rootless Docker setup
+# Rootless Docker setup - this script requires it, so failure is fatal.
+# Precondition: tool must be available, /run/user/<uid> must be writable,
+# and subuid/subgid entries must exist for the service user.
 SVC_UID=$(id -u svc_mist)
-if [ ! -S "/run/user/$SVC_UID/docker.sock" ]; then
-  su - svc_mist -s /bin/bash <<'ROOTLESS'
-  export XDG_RUNTIME_DIR=/run/user/$(id -u)
-  mkdir -p $XDG_RUNTIME_DIR
-  systemctl --user start dbus.socket || true
-  dockerd-rootless-setuptool.sh install
-  systemctl --user enable --now docker
+if ! command -v dockerd-rootless-setuptool.sh >/dev/null 2>&1; then
+    error_exit "rootless Docker helper (dockerd-rootless-setuptool.sh) not installed"
+fi
+# ensure subuid/subgid entries for svc_mist
+# Use usermod --add-subuids/subgids (shadow-utils >= 4.9, standard on RHEL 9)
+# which handles file creation, newline safety, and duplicate detection.
+if ! grep -q '^svc_mist:' /etc/subuid 2>/dev/null; then
+    log "adding /etc/subuid entry for svc_mist"
+    usermod --add-subuids 100000-165535 svc_mist
+fi
+if ! grep -q '^svc_mist:' /etc/subgid 2>/dev/null; then
+    log "adding /etc/subgid entry for svc_mist"
+    usermod --add-subgids 100000-165535 svc_mist
+fi
+
+# runtime directory used by rootless docker
+XDG_RUNTIME_DIR="/run/user/$SVC_UID"
+DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+
+if [ ! -S "$XDG_RUNTIME_DIR/docker.sock" ]; then
+    log "running rootless Docker setup for svc_mist"
+    su - svc_mist -s /bin/bash <<'ROOTLESS'
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
+# ensure runtime dir exists and is owned by the user
+mkdir -p "${XDG_RUNTIME_DIR}"
+# start user bus; it's okay if this fails but continue
+systemctl --user start dbus.socket || true
+# perform the installation; let failure propagate
+dockerd-rootless-setuptool.sh install || true
+# enable and start the rootless docker user service
+systemctl --user enable --now docker.service || true
 ROOTLESS
-  echo "Applied rootless Docker setup"
+    # verify socket now exists and is owned correctly
+    if [ ! -S "$XDG_RUNTIME_DIR/docker.sock" ]; then
+        error_exit "rootless Docker setup did not produce socket"
+    fi
+    owner=$(stat -c '%U' "$XDG_RUNTIME_DIR/docker.sock")
+    if [ "$owner" != "svc_mist" ]; then
+        error_exit "docker.sock owned by $owner instead of svc_mist"
+    fi
+    log "rootless Docker successfully set up as svc_mist"
 else
-  echo "Rootless Docker already set up; skipping"
+    log "Rootless Docker already set up; skipping"
 fi
 
 loginctl enable-linger svc_mist || true
 
-# runtime directory used by rootless docker
-XDG_RUNTIME_DIR="/run/user/$SVC_UID"
-
 # if the caller asked only for an update, perform that and exit early
 if [ "$ACTION" = update ]; then
   echo "Performing update for component '$COMP_TO_UPDATE'"
-  # load images as needed
+  # Stage and load images; copy only what is needed for this update.
   if [ "$COMP_TO_UPDATE" = prometheus ] || [ "$COMP_TO_UPDATE" = all ]; then
-    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/prometheus.tar || true"
+    cp "$DOWNLOAD_DIR/prometheus.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/prometheus.tar"
+    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/prometheus.tar || true"
   fi
   if [ "$COMP_TO_UPDATE" = grafana ] || [ "$COMP_TO_UPDATE" = all ]; then
-    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/grafana.tar || true"
+    cp "$DOWNLOAD_DIR/grafana.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/grafana.tar"
+    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/grafana.tar || true"
   fi
   if [ "$COMP_TO_UPDATE" = loki ] || [ "$COMP_TO_UPDATE" = all ]; then
-    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/loki.tar || true"
+    cp "$DOWNLOAD_DIR/loki.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/loki.tar"
+    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/loki.tar || true"
   fi
   if [ "$COMP_TO_UPDATE" = tempo ] || [ "$COMP_TO_UPDATE" = all ]; then
-    su - svc_mist -s /bin/bash -c "docker load -i $DOWNLOAD_DIR/tempo.tar || true"
+    cp "$DOWNLOAD_DIR/tempo.tar" "$IMAGE_STAGE_DIR/" && chown svc_mist:svc_mist "$IMAGE_STAGE_DIR/tempo.tar"
+    su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/tempo.tar || true"
   fi
 
   # restart/bring up requested services
+  # prometheus and grafana have no profile (always start);
+  # only loki and tempo are profile-gated in docker-compose.yml
   PROFILE_ARGS=""
-  # grafana always enabled
-  PROFILE_ARGS="$PROFILE_ARGS --profile grafana"
   [ "$USE_LOKI" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile loki"
   [ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
   if [ "$COMP_TO_UPDATE" != all ]; then
@@ -220,24 +288,39 @@ if [ "$ACTION" = update ]; then
   else
     SERVICE_ARG=""
   fi
-  su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d $SERVICE_ARG"
+  if ! su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker compose version >/dev/null 2>&1"; then
+    error_exit "svc_mist cannot invoke docker compose during update; rootless daemon not operational"
+  fi
+  su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d $SERVICE_ARG"
   echo "Update finished."
   exit 0
 fi
 
-# Load images (install/initial run) from tarballs only.
-su - svc_mist -s /bin/bash <<'LOAD'
-[ "$USE_PROMETHEUS" = yes ] && docker load -i $DOWNLOAD_DIR/prometheus.tar || true
-# grafana always installed
-docker load -i $DOWNLOAD_DIR/grafana.tar || true
-[ "$USE_LOKI" = yes ] && docker load -i $DOWNLOAD_DIR/loki.tar || true
-[ "$USE_TEMPO" = yes ] && docker load -i $DOWNLOAD_DIR/tempo.tar || true
+# Load images (install/initial run) from tarballs only.  If svc_mist
+# cannot talk to Docker at this point something is wrong with rootless.
+if ! su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker version >/dev/null 2>&1"; then
+    error_exit "svc_mist cannot access Docker daemon after rootless setup"
+fi
+# Copy tarballs to staging dir so svc_mist can read them regardless of the
+# permissions on the directory the repo was cloned into.
+[ "$USE_PROMETHEUS" = yes ] && cp "$DOWNLOAD_DIR/prometheus.tar" "$IMAGE_STAGE_DIR/"
+cp "$DOWNLOAD_DIR/grafana.tar" "$IMAGE_STAGE_DIR/"
+[ "$USE_LOKI" = yes ] && cp "$DOWNLOAD_DIR/loki.tar" "$IMAGE_STAGE_DIR/"
+[ "$USE_TEMPO" = yes ] && cp "$DOWNLOAD_DIR/tempo.tar" "$IMAGE_STAGE_DIR/"
+chown svc_mist:svc_mist "$IMAGE_STAGE_DIR"/*.tar
+su - svc_mist -s /bin/bash <<LOAD
+export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR
+export DOCKER_HOST=$DOCKER_HOST
+[ "$USE_PROMETHEUS" = yes ] && docker load -i $IMAGE_STAGE_DIR/prometheus.tar || true
+docker load -i $IMAGE_STAGE_DIR/grafana.tar || true
+[ "$USE_LOKI" = yes ] && docker load -i $IMAGE_STAGE_DIR/loki.tar || true
+[ "$USE_TEMPO" = yes ] && docker load -i $IMAGE_STAGE_DIR/tempo.tar || true
 LOAD
 
-# compute profile arguments for later use (used both in install and updates)
+# compute profile arguments for later use
+# prometheus and grafana have no profile (always start);
+# only loki and tempo are profile-gated in docker-compose.yml
 PROFILE_ARGS=""
-# grafana always enabled
-PROFILE_ARGS="$PROFILE_ARGS --profile grafana"
 [ "$USE_LOKI" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile loki"
 [ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
 
@@ -264,7 +347,7 @@ if [ "$USE_TEMPO" = yes ]; then
   [ -f "$MIST_DIR/tempo/tempo-config.yaml" ] || cp $BASE_DIR/configs/tempo-config.yaml.template $MIST_DIR/tempo/tempo-config.yaml
 fi
 
-# Firewalld – open only ports for enabled services
+# Firewalld - open only ports for enabled services
 ports="9090 3000"                         # prometheus + grafana
 [ "$USE_LOKI" = yes ] && ports="$ports 3100"
 if [ "$USE_TEMPO" = yes ]; then
@@ -272,7 +355,6 @@ if [ "$USE_TEMPO" = yes ]; then
 fi
 for port in $ports; do
   firewall-cmd --permanent --query-port=$port/tcp >/dev/null || firewall-cmd --permanent --add-port=$port/tcp
-
 done
 firewall-cmd --reload
 
@@ -298,10 +380,13 @@ else
   chown svc_mist:svc_mist "$PROM_YML" || true
 fi
 
-# Start Docker Compose as svc_mist
-XDG_RUNTIME_DIR="/run/user/$SVC_UID"
+# Start Docker Compose as svc_mist.  At this point rootless Docker must
+# be functional; treat any failure as fatal.
 mkdir -p "$XDG_RUNTIME_DIR"
 chown svc_mist:svc_mist "$XDG_RUNTIME_DIR" || true
-su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR && cd $MIST_DIR && docker compose up -d $PROFILE_ARGS"
+if ! su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker compose version >/dev/null 2>&1"; then
+    error_exit "svc_mist cannot invoke docker compose; rootless daemon not operational"
+fi
+su - svc_mist -s /bin/bash -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d"
 
 echo "Server deployment complete."

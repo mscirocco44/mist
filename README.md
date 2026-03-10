@@ -5,7 +5,9 @@ installer script you must ensure the host OS has a few basic packages
 installed:
 
 - `firewalld` (for opening ports)
-- `wget`, `curl`, and `git` (used by the scripts and helpers)
+- `wget`, `curl`, and `git` (used by the scripts and helpers);
+  if you store RPMs in the repo they are tracked with Git LFS – remember to run
+  `git lfs pull` after cloning or copy the binaries into `downloads/` manually.
 
 If these packages are not present the scripts will abort and you'll need to
 install them manually; you can copy their RPMs into `downloads/` and run
@@ -50,7 +52,8 @@ Ports Opened
 Software Used
 -------------
 **Server:**
-- Docker (rootless, svc_mist user)
+- Docker must be configured rootless for the `svc_mist` user (the
+  installer now enforces this and will abort if rootless setup fails)
 - Prometheus (container)
 - Grafana (container)
 - Loki (container)
@@ -89,10 +92,13 @@ Step-by-step Deployment
     ```bash
     chmod +x scripts/deploy-client.sh
     ```
-3. Run client deploy (specify the server hostname or IP; `--help` is
-   supported if you forget the syntax):
+3. Run client deploy (specify the server hostname or IP):
     ```bash
-    sudo ./scripts/deploy-client.sh <server_ip_or_hostname>
+    sudo ./scripts/deploy-client.sh --help                          # show usage
+    sudo ./scripts/deploy-client.sh <server_ip_or_hostname>         # node_exporter + alloy only
+    sudo ./scripts/deploy-client.sh --with-loki <server_ip>        # enable Loki log shipping
+    sudo ./scripts/deploy-client.sh --with-tempo <server_ip>       # also install OTel Collector
+    sudo ./scripts/deploy-client.sh --with-loki --with-tempo <server_ip>  # full stack
     ```
 4. Edit `/etc/alloy/config.alloy` after install to point at your server’s Loki/Tempo endpoints.
 
@@ -115,7 +121,7 @@ Troubleshooting & Verification
 **Client:**
 - Node exporter metrics: `curl http://localhost:9100/metrics | head -n 20`
 - Alloy metrics/log endpoints: per `/etc/alloy/config.alloy` settings
-- OTEL collector: `systemctl status otel-collector`
+- OTel Collector: `systemctl status mist-otelcol`
 
 ---
 Upgrade/Update
@@ -168,14 +174,16 @@ Clients run native services (no containers). To install and start `alloy`, `node
 	```
 2. Run client deploy, passing the server IP or hostname:
 	```bash
-	sudo ./scripts/deploy-client.sh <server_ip_or_hostname>
+	sudo ./scripts/deploy-client.sh <server_ip_or_hostname>             # metrics only
+	sudo ./scripts/deploy-client.sh --with-loki <server_ip_or_hostname> # + Loki log shipping
+	sudo ./scripts/deploy-client.sh --with-tempo <server_ip_or_hostname> # + OTel traces to Tempo
 	```
 	- This will automatically set the correct server address in `/etc/alloy/config.alloy` and `/etc/otel-collector/config.yaml`.
 
 The `deploy-client.sh` script will:
-- install `alloy` from `downloads/alloy*.rpm` and configure `/etc/alloy/config.alloy` (server address auto-set);
-- install `node_exporter` strictly from `downloads/node_exporter*` and create a systemd unit at `/etc/systemd/system/node_exporter.service` (no network fetch will be attempted);
-- install the OpenTelemetry Collector from `downloads/` if a tarball is provided, otherwise skip that optional component entirely.
+- install `alloy` from `downloads/alloy*.rpm` and configure `/etc/alloy/config.alloy` (server address auto-set); service name: `mist-alloy`
+- install `node_exporter` strictly from `downloads/node_exporter*` and create a systemd unit; service name: `mist-node-exporter`
+- install the OpenTelemetry Collector from `downloads/otelcol*.tar*` only when `--with-tempo` is passed; service name: `mist-otelcol`
 
 Notes
 -----
