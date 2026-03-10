@@ -1,0 +1,13 @@
+// Log shipping to Loki via systemd journal
+loki.source.journal "system" {
+  forward_to = [loki.write.mist.receiver]
+  labels = {
+    job = "systemd-journal",
+  }
+}
+
+loki.write "mist" {
+  endpoint {
+    url = "http://<server-ip>:3100/loki/api/v1/push"
+  }
+}

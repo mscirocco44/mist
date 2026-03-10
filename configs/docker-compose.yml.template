@@ -16,6 +16,8 @@ services:
     user: "0"
     volumes:
       - ${MIST_DATA_DIR}/grafana:/var/lib/grafana:Z
+      - ./grafana/provisioning:/etc/grafana/provisioning:Z
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:Z
     ports:
       - "3000:3000"
 

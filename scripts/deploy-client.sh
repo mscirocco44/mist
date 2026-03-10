@@ -140,8 +140,13 @@ restorecon -Rv /etc/alloy
 
 if [ ! -f "/etc/alloy/config.alloy" ]; then
     tmpl=$(<"$BASE_DIR/configs/config.alloy.template")
-    config_content="${tmpl//<server-ip>/$SERVER}"
-    printf '%s' "$config_content" > /etc/alloy/config.alloy
+    printf '%s' "$tmpl" > /etc/alloy/config.alloy
+    if [ "$USE_LOKI" = yes ]; then
+        loki_tmpl=$(<"$BASE_DIR/configs/config.alloy.loki.template")
+        printf '%s' "${loki_tmpl//<server-ip>/$SERVER}" >> /etc/alloy/config.alloy
+        # svc_mist needs journal read access to ship logs
+        usermod -aG systemd-journal svc_mist || true
+    fi
 fi
 
 cat > /etc/systemd/system/mist-alloy.service <<'UNIT'

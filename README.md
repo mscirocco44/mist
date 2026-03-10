@@ -45,6 +45,20 @@ running scripts.
   - Grafana: pull image, then `docker save grafana/grafana:latest -o grafana.tar`
   - Loki: pull image, then `docker save grafana/loki:2.8.2 -o loki.tar`
   - Tempo: pull image, then `docker save grafana/tempo:1.5.0 -o tempo.tar`
+- Grafana dashboard JSON files (optional — auto-provisioned if present in `downloads/dashboards/`):
+  ```bash
+  # Run these on a machine with internet access, then copy downloads/dashboards/ to the target
+  mkdir -p downloads/dashboards
+  curl -L "https://grafana.com/api/dashboards/1860/revisions/latest/download" \
+       -o downloads/dashboards/dashboard-node-exporter.json   # Node Exporter Full
+  curl -L "https://grafana.com/api/dashboards/13639/revisions/latest/download" \
+       -o downloads/dashboards/dashboard-loki.json            # Loki logs (requires --with-loki)
+  curl -L "https://grafana.com/api/dashboards/21698/revisions/latest/download" \
+       -o downloads/dashboards/dashboard-alloy.json           # Alloy overview
+  ```
+  Place these in `downloads/dashboards/` before running `deploy-server.sh`.
+  The installer copies them automatically and Grafana loads them on first start.
+  If omitted, Grafana still works — you just won't have pre-built dashboards.
 
 **Client:**
 - Alloy RPM: [alloy-1.13.2-1.amd64.rpm](https://github.com/grafana/alloy/releases) (find latest, download RPM)
@@ -126,11 +140,32 @@ Step-by-step Deployment
 4. Edit `/etc/alloy/config.alloy` after install to point at your server’s Loki/Tempo endpoints.
 
 ---
-How to Edit Dashboards
-----------------------
-- Grafana persists data in `/opt/mist-server/grafana`.
-- Access Grafana at `http://<server>:3000` (default admin/changeme).
-- You can add/edit dashboards via Grafana UI.
+Grafana Dashboards & Data Sources
+-----------------------------------
+Data sources and dashboards are **auto-provisioned** on first start — no manual clicking needed.
+
+**Data sources** (configured automatically based on install flags):
+- Prometheus — always added
+- Loki — added when `--with-loki` was passed
+- Tempo — added when `--with-tempo` was passed
+
+**Pre-built dashboards** (provisioned if JSON files were in `downloads/` at install time):
+- `dashboard-node-exporter.json` → Node Exporter Full (ID 1860) — host metrics
+- `dashboard-loki.json` → Loki logs explorer (ID 13639)
+- `dashboard-alloy.json` → Alloy overview (ID 21698)
+
+1. Open Grafana at `http://<server>:3000` — default login is **admin / admin**.
+   Grafana will prompt you to change the password on first login.
+
+2. Pre-built dashboards appear under **Dashboards** in the sidebar immediately.
+   If no JSON files were present at install, you can still import them manually:
+   Dashboards → New → Import → enter the dashboard ID → Load → select data source → Import.
+
+3. **Build a custom dashboard**: Dashboards → New → New dashboard → Add visualization.
+   Pick a data source, write a PromQL/LogQL query, choose a panel type, and save.
+
+4. Dashboards and data are persisted in `<data-dir>/grafana` (default `/var/lib/mist/grafana`),
+   so they survive container restarts and re-deploys.
 
 ---
 Troubleshooting & Verification

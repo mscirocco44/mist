@@ -308,19 +308,8 @@ if [ "$ACTION" = update ]; then
     su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && docker load -i $IMAGE_STAGE_DIR/tempo.tar || true"
   fi
 
-  # restart/bring up requested services
-  # prometheus and grafana have no profile (always start);
-  # only loki and tempo are profile-gated in docker-compose.yml
-  PROFILE_ARGS=""
-  [ "$USE_LOKI" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile loki"
-  [ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
-  if [ "$COMP_TO_UPDATE" != all ]; then
-    SERVICE_ARG="$COMP_TO_UPDATE"
-  else
-    SERVICE_ARG=""
-  fi
-  systemctl restart mist-server || \
-    su - svc_mist -c "export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DOCKER_HOST=$DOCKER_HOST && cd $MIST_DIR && docker compose $PROFILE_ARGS up -d $SERVICE_ARG"
+  # Restart via systemctl — the unit already has the correct profiles baked in from install time
+  systemctl restart mist-server
   echo "Update finished."
   exit 0
 fi
@@ -383,6 +372,54 @@ if [ "$USE_TEMPO" = yes ]; then
   mkdir -p $MIST_DIR/tempo
   [ -f "$MIST_DIR/tempo/tempo-config.yaml" ] || cp $BASE_DIR/configs/tempo-config.yaml.template $MIST_DIR/tempo/tempo-config.yaml
 fi
+
+# Grafana provisioning — datasources (generated) and dashboards (static + JSON files)
+mkdir -p "$MIST_DIR/grafana/provisioning/datasources"
+mkdir -p "$MIST_DIR/grafana/provisioning/dashboards"
+mkdir -p "$MIST_DIR/grafana/dashboards"
+
+# Copy static dashboard provisioning config
+cp "$BASE_DIR/configs/grafana/provisioning/dashboards/dashboards.yaml" \
+   "$MIST_DIR/grafana/provisioning/dashboards/dashboards.yaml"
+
+# Generate datasources based on which services are enabled
+cat > "$MIST_DIR/grafana/provisioning/datasources/datasources.yaml" <<DATASOURCES
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+DATASOURCES
+if [ "$USE_LOKI" = yes ]; then
+  cat >> "$MIST_DIR/grafana/provisioning/datasources/datasources.yaml" <<DATASOURCES
+  - name: Loki
+    type: loki
+    url: http://loki:3100
+    editable: true
+DATASOURCES
+fi
+if [ "$USE_TEMPO" = yes ]; then
+  cat >> "$MIST_DIR/grafana/provisioning/datasources/datasources.yaml" <<DATASOURCES
+  - name: Tempo
+    type: tempo
+    url: http://tempo:3200
+    editable: true
+DATASOURCES
+fi
+
+# Copy dashboard JSON files — only for enabled services
+dashboards=(node-exporter)
+[ "$USE_LOKI" = yes ]  && dashboards+=(loki)
+[ "$USE_TEMPO" = yes ] && dashboards+=(tempo)
+for dash in "${dashboards[@]}"; do
+  src="$DOWNLOAD_DIR/dashboards/dashboard-${dash}.json"
+  if [ -f "$src" ]; then
+    cp "$src" "$MIST_DIR/grafana/dashboards/dashboard-${dash}.json"
+    log "Installed dashboard: dashboard-${dash}.json"
+  fi
+done
 
 chown -R svc_mist:svc_mist $MIST_DIR
 restorecon -Rv $MIST_DIR
@@ -461,5 +498,21 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now mist-server
 
-echo "Server deployment complete."
-echo "Manage the stack with: systemctl status|start|stop|restart mist-server"
+echo ""
+echo "=========================================="
+echo " Mist server deployment complete"
+echo "=========================================="
+echo " Server IP : $SELECTED_IP"
+echo " Grafana   : http://$SELECTED_IP:3000  (admin / admin)"
+echo " Prometheus: http://$SELECTED_IP:9090"
+[ "$USE_LOKI" = yes ]  && echo " Loki      : http://$SELECTED_IP:3100"
+[ "$USE_TEMPO" = yes ] && echo " Tempo     : http://$SELECTED_IP:3200  (OTLP: $SELECTED_IP:4317)"
+echo "------------------------------------------"
+echo " Deploy clients with:"
+CLIENT_FLAGS=""
+[ "$USE_LOKI" = yes ]  && CLIENT_FLAGS="$CLIENT_FLAGS --with-loki"
+[ "$USE_TEMPO" = yes ] && CLIENT_FLAGS="$CLIENT_FLAGS --with-tempo"
+echo "   sudo ./scripts/deploy-client.sh$CLIENT_FLAGS $SELECTED_IP"
+echo "=========================================="
+echo ""
+echo "Manage the stack: systemctl status|start|stop|restart mist-server"
