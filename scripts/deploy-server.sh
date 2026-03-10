@@ -20,6 +20,22 @@ ACTION=install      # install or update
 COMP_TO_UPDATE=all  # used when ACTION=update
 HOSTS_FILE=""
 
+show_usage() {
+    cat <<'EOF'
+Usage: ./deploy-server.sh [options] [hosts_file]
+
+Options:
+  --with-loki            enable Loki (disabled by default)
+  --with-tempo           enable Tempo (disabled by default)
+  --only-prometheus      install/prometheus only (disables loki and tempo)
+  --update [component]   load updated image(s) and restart component(s)
+                         component = prometheus|grafana|loki|tempo|all
+  --help, -h             show this message
+
+hosts_file: optional path containing client IPs/hostnames
+EOF
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --with-loki)
@@ -40,7 +56,7 @@ while [ $# -gt 0 ]; do
             fi
             ;;
         --help|-h)
-            sed -n '1,20p' "$0"
+            show_usage
             exit 0
             ;;
         *)
@@ -62,20 +78,51 @@ read -p "Select the number of the interface/IP to use for this server: " NIC_CHO
 SELECTED_IP=$(ip -o -4 addr show | awk -v n="$NIC_CHOICE" 'NR==n {print $4}' | cut -d'/' -f1)
 echo "Selected IP: $SELECTED_IP"
 
-# Check downloads (required packages and any enabled images)
-files=(containerd.io*.rpm docker-ce*.rpm docker-ce-cli*.rpm docker-compose-plugin*.rpm)
-[ "$USE_PROMETHEUS" = yes ] && files+=("prometheus.tar")
-# grafana always enabled
-files+=("grafana.tar")
-[ "$USE_LOKI" = yes ] && files+=("loki.tar")
-[ "$USE_TEMPO" = yes ] && files+=("tempo.tar")
-for file in "${files[@]}"; do
-  [ -f "$DOWNLOAD_DIR/$file" ] || { echo "Missing $file"; exit 1; }
-done
+# note: this installer is offline‑first and does not require network
+# connectivity; all required packages and images must live in the
+# downloads/ directory.  any network access is ignored.
 
-# System prep
-dnf update -y
-dnf install -y wget curl git firewalld || { echo "Install failed"; exit 1; }
+# Check downloads (required packages and any enabled images)
+# this script runs in offline mode only: every pattern must match.
+patterns=(containerd.io*.rpm docker-ce*.rpm docker-ce-cli*.rpm docker-compose-plugin*.rpm)
+[ "$USE_PROMETHEUS" = yes ] && patterns+=("prometheus.tar")
+# grafana always enabled
+patterns+=("grafana.tar")
+[ "$USE_LOKI" = yes ] && patterns+=("loki.tar")
+[ "$USE_TEMPO" = yes ] && patterns+=("tempo.tar")
+
+shopt -s nullglob
+for pat in "${patterns[@]}"; do
+  matches=("$DOWNLOAD_DIR"/$pat)
+  if [ ${#matches[@]} -eq 0 ]; then
+    echo "Missing $pat" >&2
+    exit 1
+  fi
+done
+shopt -u nullglob
+
+# System prep – offline behaviour.  this script will not contact any
+# remote repository.  it assumes the base OS is already functional; the
+# only additional packages it needs are listed below.  if any are missing
+# the script will abort and expect you to install them yourself (you may
+# use RPMs from the downloads/ directory to do so).
+
+required_pkgs=(firewalld wget curl git)
+missing=()
+for pkg in "${required_pkgs[@]}"; do
+    if ! rpm -q "$pkg" >/dev/null 2>&1; then
+        missing+=("$pkg")
+    fi
+done
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "Prerequisite packages missing: ${missing[*]}" >&2
+    echo "Please install them before running this script." >&2
+    echo "You can copy the corresponding RPMs into $DOWNLOAD_DIR (e.g." >&2
+    echo "$DOWNLOAD_DIR/firewalld*.rpm, $DOWNLOAD_DIR/wget*.rpm) and then" >&2
+    echo "run 'dnf localinstall -y <rpm>' manually." >&2
+    exit 1
+fi
+
 systemctl enable --now firewalld || true
 setenforce 1
 restorecon -Rv /opt /etc /var
@@ -85,8 +132,9 @@ id svc_mist &>/dev/null || useradd --system --no-create-home --shell /sbin/nolog
 
 # Docker install
 if ! rpm -q docker-ce >/dev/null; then
+  # always install from local downloads
   dnf localinstall -y $DOWNLOAD_DIR/containerd.io*.rpm $DOWNLOAD_DIR/docker-ce*.rpm $DOWNLOAD_DIR/docker-ce-cli*.rpm $DOWNLOAD_DIR/docker-compose-plugin*.rpm || { echo "Docker install failed"; exit 1; }
-  echo "Installed Docker packages"
+  echo "Installed Docker packages from downloads"
 else
   echo "Docker already installed; skipping"
 fi
@@ -144,7 +192,7 @@ if [ "$ACTION" = update ]; then
   exit 0
 fi
 
-# Load images (install/initial run)
+# Load images (install/initial run) from tarballs only.
 su - svc_mist -s /bin/bash <<'LOAD'
 [ "$USE_PROMETHEUS" = yes ] && docker load -i $DOWNLOAD_DIR/prometheus.tar || true
 # grafana always installed
