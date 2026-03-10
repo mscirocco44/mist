@@ -388,29 +388,39 @@ apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
+    access: proxy
     url: http://prometheus:9090
+    orgId: 1
     isDefault: true
     editable: true
+    version: 1
 DATASOURCES
 if [ "$USE_LOKI" = yes ]; then
   cat >> "$MIST_DIR/grafana/provisioning/datasources/datasources.yaml" <<DATASOURCES
   - name: Loki
     type: loki
+    access: proxy
     url: http://loki:3100
+    orgId: 1
     editable: true
+    version: 1
 DATASOURCES
 fi
 if [ "$USE_TEMPO" = yes ]; then
   cat >> "$MIST_DIR/grafana/provisioning/datasources/datasources.yaml" <<DATASOURCES
   - name: Tempo
     type: tempo
+    access: proxy
     url: http://tempo:3200
+    orgId: 1
     editable: true
+    version: 1
 DATASOURCES
 fi
 
 # Copy dashboard JSON files — only for enabled services
-dashboards=(node-exporter)
+# alloy is always installed on clients; node-exporter likewise
+dashboards=(node-exporter alloy)
 [ "$USE_LOKI" = yes ]  && dashboards+=(loki)
 [ "$USE_TEMPO" = yes ] && dashboards+=(tempo)
 for dash in "${dashboards[@]}"; do
