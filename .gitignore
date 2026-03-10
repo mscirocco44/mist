@@ -1,0 +1,8 @@
+# Binary downloads — fetch with scripts/download-deps.sh
+downloads/*.rpm
+downloads/*.tar
+downloads/*.tar.gz
+downloads/*.tar.*
+
+# Keep dashboard JSON files (small, version-controlled)
+!downloads/dashboards/

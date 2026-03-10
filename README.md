@@ -25,40 +25,27 @@ installer script, the host OS must have these packages installed:
 If any are missing the scripts will abort with a clear error. You can copy their
 RPMs into `downloads/` and run `dnf localinstall -y <rpm>` manually.
 
-Place all required RPMs, tarballs, and dashboard JSON files in `downloads/`
-before running any script.
+**Fetching all dependencies (run on a machine with internet access):**
 
-**Server downloads:**
-
-Docker RPMs (RHEL 9 x86_64):
-- `containerd.io-2.2.1-1.el9.x86_64.rpm`
-- `docker-ce-29.3.0-1.el9.x86_64.rpm`
-- `docker-ce-cli-29.3.0-1.el9.x86_64.rpm`
-- `docker-compose-plugin-5.1.0-1.el9.x86_64.rpm`
-
-Container image tarballs (pull on a connected machine, then copy to `downloads/`):
 ```bash
-docker pull prom/prometheus:latest      && docker save prom/prometheus:latest      -o downloads/prometheus.tar
-docker pull grafana/grafana:latest      && docker save grafana/grafana:latest      -o downloads/grafana.tar
-docker pull grafana/loki:2.8.2          && docker save grafana/loki:2.8.2          -o downloads/loki.tar
-docker pull grafana/tempo:1.5.0         && docker save grafana/tempo:1.5.0         -o downloads/tempo.tar
+chmod +x scripts/download-deps.sh
+./scripts/download-deps.sh
 ```
 
-Grafana dashboard JSON files (optional — auto-provisioned if present in `downloads/dashboards/`):
-```bash
-mkdir -p downloads/dashboards
-curl -L "https://grafana.com/api/dashboards/1860/revisions/latest/download"  -o downloads/dashboards/dashboard-node-exporter.json
-curl -L "https://grafana.com/api/dashboards/12019/revisions/latest/download" -o downloads/dashboards/dashboard-loki.json
-curl -L "https://grafana.com/api/dashboards/21698/revisions/latest/download" -o downloads/dashboards/dashboard-alloy.json
-```
-Copy `downloads/dashboards/` to the target server before running `deploy-server.sh`.
-The installer copies them automatically and Grafana loads them on first start.
-If omitted, Grafana still works — you just won't have pre-built dashboards.
+This downloads all Docker RPMs, container images, client binaries, and Grafana
+dashboard JSON files into `downloads/`. Once complete, transfer the entire repo
+directory to the air-gapped target and run the deploy scripts from there.
 
-**Client downloads:**
-- Alloy RPM: e.g. `alloy-1.13.2-1.amd64.rpm` — from https://github.com/grafana/alloy/releases
-- Node Exporter tarball: e.g. `node_exporter-1.7.0.linux-amd64.tar.gz` — from https://github.com/prometheus/node_exporter/releases
-- OTel Collector tarball (optional, `--with-tempo` only): e.g. `otelcol-contrib_0.93.0_linux_amd64.tar.gz` — from https://github.com/open-telemetry/opentelemetry-collector-releases/releases
+Options:
+```
+--skip-images    skip pulling/saving Docker container images (requires docker)
+--skip-rpms      skip downloading Docker and Alloy RPMs
+--skip-client    skip downloading node_exporter and otelcol
+```
+
+Grafana dashboard JSON files are also committed to `downloads/dashboards/` in
+this repo, so they are available immediately after cloning without running the
+download script.
 
 ---
 Ports Opened
