@@ -323,9 +323,7 @@ PROFILE_ARGS=""
 [ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
 
 # Setup directories and copy only the templates needed for enabled components
-mkdir -p $MIST_DIR
-chown -R svc_mist:svc_mist $MIST_DIR
-restorecon -Rv $MIST_DIR
+mkdir -p $MIST_DIR $MIST_DIR/grafana
 
 [ -f "$MIST_DIR/docker-compose.yml" ] || cp $BASE_DIR/configs/docker-compose.yml.template $MIST_DIR/docker-compose.yml
 
@@ -344,6 +342,9 @@ if [ "$USE_TEMPO" = yes ]; then
   mkdir -p $MIST_DIR/tempo
   [ -f "$MIST_DIR/tempo/tempo-config.yaml" ] || cp $BASE_DIR/configs/tempo-config.yaml.template $MIST_DIR/tempo/tempo-config.yaml
 fi
+
+chown -R svc_mist:svc_mist $MIST_DIR
+restorecon -Rv $MIST_DIR
 
 # Firewalld - open only ports for enabled services
 ports="9090 3000"                         # prometheus + grafana

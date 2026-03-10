@@ -3,8 +3,9 @@ services:
   prometheus:
     image: prom/prometheus:latest
     restart: unless-stopped
+    user: "0"
     volumes:
-      - ./prometheus:/etc/prometheus
+      - ./prometheus:/etc/prometheus:Z
     ports:
       - "9090:9090"
 
@@ -12,18 +13,20 @@ services:
   grafana:
     image: grafana/grafana:latest
     restart: unless-stopped
+    user: "0"
     volumes:
-      - ./grafana:/var/lib/grafana
+      - ./grafana:/var/lib/grafana:Z
     ports:
       - "3000:3000"
 
-  # Loki and Tempo are also profile‑gated so they only start when enabled.
+  # Loki and Tempo are profile-gated so they only start when enabled.
   loki:
     profiles: ["loki"]
     image: grafana/loki:2.8.2
     restart: unless-stopped
+    user: "0"
     volumes:
-      - ./loki:/etc/loki
+      - ./loki:/etc/loki:Z
     ports:
       - "3100:3100"
 
@@ -31,8 +34,9 @@ services:
     profiles: ["tempo"]
     image: grafana/tempo:1.5.0
     restart: unless-stopped
+    user: "0"
     volumes:
-      - ./tempo:/etc/tempo
+      - ./tempo:/etc/tempo:Z
     ports:
       - "3200:3200"
       - "4317:4317"
