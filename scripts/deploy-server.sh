@@ -34,20 +34,26 @@ USE_TEMPO=no
 ACTION=install      # install or update
 COMP_TO_UPDATE=all  # used when ACTION=update
 HOSTS_FILE=""
+DATA_DIR=""         # set via --data-dir or interactive prompt
+
+DEFAULT_DATA_DIR="/var/lib/mist"
 
 show_usage() {
     cat <<'EOF'
-Usage: ./deploy-server.sh [options] [hosts_file]
+Usage: ./deploy-server.sh [options] <hosts_file>
 
 Options:
-  --with-loki            enable Loki (disabled by default)
-  --with-tempo           enable Tempo (disabled by default)
-  --only-prometheus      install/prometheus only (disables loki and tempo)
-  --update [component]   load updated image(s) and restart component(s)
-                         component = prometheus|grafana|loki|tempo|all
-  --help, -h             show this message
+  --with-loki              enable Loki (disabled by default)
+  --with-tempo             enable Tempo (disabled by default)
+  --only-prometheus        prometheus only (disables loki and tempo)
+  --data-dir <path>        where to store service data
+                           default: /var/lib/mist  (recommended for RHEL)
+                           subdirs created: prometheus/ grafana/ loki/ tempo/
+  --update [component]     load updated image(s) and restart component(s)
+                           component = prometheus|grafana|loki|tempo|all
+  --help, -h               show this message
 
-hosts_file: optional path containing client IPs/hostnames
+hosts_file: required — path to file listing client IPs/hostnames, one per line
 EOF
 }
 
@@ -62,6 +68,10 @@ while [ $# -gt 0 ]; do
         --only-prometheus|--only-prom)
             USE_LOKI=no
             USE_TEMPO=no
+            ;;
+        --data-dir)
+            DATA_DIR="$2"
+            shift
             ;;
         --update)
             ACTION=update
@@ -81,6 +91,18 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# hosts file is required (skip check for --update which doesn't need it)
+if [ "$ACTION" != update ]; then
+    if [ -z "$HOSTS_FILE" ]; then
+        echo "ERROR: hosts_file is required." >&2
+        show_usage
+        exit 1
+    fi
+    if [ ! -f "$HOSTS_FILE" ]; then
+        error_exit "hosts file not found: $HOSTS_FILE"
+    fi
+fi
 
 # Determine the directory containing this script; do not rely on $PWD
 # so that the installer works no matter where you invoke it from.  Using
@@ -105,6 +127,15 @@ ip -o -4 addr show | awk '{print NR ". " $2 " - " $4}'
 read -p "Select the number of the interface/IP to use for this server: " NIC_CHOICE
 SELECTED_IP=$(ip -o -4 addr show | awk -v n="$NIC_CHOICE" 'NR==n {print $4}' | cut -d'/' -f1)
 log "Selected IP: $SELECTED_IP"
+
+# Data directory selection
+if [ -z "$DATA_DIR" ]; then
+    echo ""
+    echo "Where should service data be stored (prometheus, grafana, loki, tempo)?"
+    read -p "  Data directory [${DEFAULT_DATA_DIR}]: " DATA_DIR_INPUT
+    DATA_DIR="${DATA_DIR_INPUT:-$DEFAULT_DATA_DIR}"
+fi
+log "Data directory: $DATA_DIR"
 
 # note: this installer is offline-first and does not require network
 # connectivity; all required packages and images must live in the
@@ -323,7 +354,17 @@ PROFILE_ARGS=""
 [ "$USE_TEMPO" = yes ] && PROFILE_ARGS="$PROFILE_ARGS --profile tempo"
 
 # Setup directories and copy only the templates needed for enabled components
-mkdir -p $MIST_DIR $MIST_DIR/grafana
+mkdir -p $MIST_DIR
+
+# Create data directories; these are owned by svc_mist and hold all
+# persistent service state (prometheus TSDB, grafana DB, loki chunks, tempo traces).
+mkdir -p "$DATA_DIR/prometheus" "$DATA_DIR/grafana" "$DATA_DIR/loki" "$DATA_DIR/tempo"
+chown -R svc_mist:svc_mist "$DATA_DIR"
+restorecon -Rv "$DATA_DIR" 2>/dev/null || true
+
+# Write .env so Docker Compose can substitute ${MIST_DATA_DIR} in volume mounts
+echo "MIST_DATA_DIR=$DATA_DIR" > "$MIST_DIR/.env"
+chown svc_mist:svc_mist "$MIST_DIR/.env"
 
 [ -f "$MIST_DIR/docker-compose.yml" ] || cp $BASE_DIR/configs/docker-compose.yml.template $MIST_DIR/docker-compose.yml
 
@@ -357,27 +398,33 @@ for port in $ports; do
 done
 firewall-cmd --reload
 
-# Prometheus config
+# Prometheus config — always regenerated from hosts file
 PROM_YML="$MIST_DIR/prometheus/prometheus.yml"
-if [ -n "$HOSTS_FILE" ] && [ -f "$HOSTS_FILE" ]; then
-  [ -f "$PROM_YML" ] && cp "$PROM_YML" "$PROM_YML.bak"
-  cat > "$PROM_YML" <<YAML
+[ -f "$PROM_YML" ] && cp "$PROM_YML" "$PROM_YML.bak"
+cat > "$PROM_YML" <<YAML
 global:
   scrape_interval: 15s
+
 scrape_configs:
-  - job_name: 'alloy_clients'
+  - job_name: 'node_exporter'
     static_configs:
       - targets:
 YAML
-  while read -r host; do
-    [ -z "$host" ] && continue
-    echo "      - \"${host}:12345\"" >> "$PROM_YML"
-  done < "$HOSTS_FILE"
-  chown svc_mist:svc_mist "$PROM_YML"
-else
-  [ -f "$PROM_YML" ] || cp $BASE_DIR/configs/prometheus.yml.template "$PROM_YML"
-  chown svc_mist:svc_mist "$PROM_YML" || true
-fi
+while read -r host; do
+  [ -z "$host" ] && continue
+  echo "        - \"${host}:9100\"" >> "$PROM_YML"
+done < "$HOSTS_FILE"
+cat >> "$PROM_YML" <<YAML
+
+  - job_name: 'alloy'
+    static_configs:
+      - targets:
+YAML
+while read -r host; do
+  [ -z "$host" ] && continue
+  echo "        - \"${host}:12345\"" >> "$PROM_YML"
+done < "$HOSTS_FILE"
+chown svc_mist:svc_mist "$PROM_YML"
 
 # Verify docker compose is reachable before creating the service
 mkdir -p "$XDG_RUNTIME_DIR"

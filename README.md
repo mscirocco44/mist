@@ -97,12 +97,17 @@ Step-by-step Deployment
    interface/IP simply so you can remember which address you're working
    with:
     ```bash
-    sudo ./scripts/deploy-server.sh --help                    # show usage
-    sudo ./scripts/deploy-server.sh --only-prometheus configs/hosts.txt
-    # or enable everything:
-    sudo ./scripts/deploy-server.sh --with-loki --with-tempo configs/hosts.txt
+    sudo ./scripts/deploy-server.sh --help                                        # show usage
+    sudo ./scripts/deploy-server.sh configs/hosts.txt                             # Prometheus + Grafana
+    sudo ./scripts/deploy-server.sh --only-prometheus configs/hosts.txt           # Prometheus only
+    sudo ./scripts/deploy-server.sh --with-loki --with-tempo configs/hosts.txt   # full stack
+    sudo ./scripts/deploy-server.sh --data-dir /mnt/data configs/hosts.txt       # custom data dir
     ```
-	- `configs/hosts.txt` should list client IPs/hostnames, one per line.
+	- `configs/hosts.txt` is **required** — list client IPs/hostnames, one per line.
+	- The file can be anywhere accessible; it does not have to be inside the repo.
+	- The installer will prompt for a **data directory** (default: `/var/lib/mist`).
+	  You can also pass `--data-dir <path>` to skip the prompt.
+	  Subdirectories `prometheus/`, `grafana/`, `loki/`, and `tempo/` are created inside it.
 
 **Client:**
 1. Place all RPMs and tarballs in `downloads/`.

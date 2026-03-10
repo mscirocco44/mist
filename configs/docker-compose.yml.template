@@ -6,27 +6,28 @@ services:
     user: "0"
     volumes:
       - ./prometheus:/etc/prometheus:Z
+      - ${MIST_DATA_DIR}/prometheus:/prometheus:Z
     ports:
       - "9090:9090"
 
-  # Grafana is always deployed as part of the stack.
   grafana:
     image: grafana/grafana:latest
     restart: unless-stopped
     user: "0"
     volumes:
-      - ./grafana:/var/lib/grafana:Z
+      - ${MIST_DATA_DIR}/grafana:/var/lib/grafana:Z
     ports:
       - "3000:3000"
 
-  # Loki and Tempo are profile-gated so they only start when enabled.
   loki:
     profiles: ["loki"]
     image: grafana/loki:2.8.2
     restart: unless-stopped
     user: "0"
+    command: -config.file=/etc/loki/loki-config.yaml
     volumes:
       - ./loki:/etc/loki:Z
+      - ${MIST_DATA_DIR}/loki:/var/lib/loki:Z
     ports:
       - "3100:3100"
 
@@ -35,8 +36,10 @@ services:
     image: grafana/tempo:1.5.0
     restart: unless-stopped
     user: "0"
+    command: -config.file=/etc/tempo/tempo-config.yaml
     volumes:
       - ./tempo:/etc/tempo:Z
+      - ${MIST_DATA_DIR}/tempo:/var/lib/tempo:Z
     ports:
       - "3200:3200"
       - "4317:4317"
