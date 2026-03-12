@@ -1,234 +1,276 @@
 Mist — Air-Gapped Observability Stack
 ======================================
 
-Mist is an automated deployment toolkit for a self-contained observability stack
-in air-gapped or offline environments. It sets up Prometheus, Grafana, Loki, and
-Tempo on a central server, and deploys Node Exporter and Alloy (log/metrics agent)
-on client nodes — all from local files with zero network access required.
+Mist deploys a full observability stack (Prometheus, Grafana, Loki, Tempo) to a
+central server and installs monitoring agents (Node Exporter, Alloy) on client
+nodes — entirely from local files with no internet access required on target systems.
 
-- **Server**: Prometheus + Grafana (always), Loki and Tempo (optional)
-- **Client**: Node Exporter + Alloy (always), OTel Collector (optional, with `--with-tempo`)
-- All components run as the `svc_mist` service user; server stack runs in rootless Docker
-- Managed via systemd: `mist-server`, `mist-alloy`, `mist-node-exporter`, `mist-otelcol`
+**Server components** (central monitoring node):
+- Prometheus — metrics collection and storage
+- Grafana — dashboards and visualization
+- Loki — log aggregation (optional, `--with-loki`)
+- Tempo — distributed tracing (optional, `--with-tempo`)
+
+**Client components** (every monitored node):
+- Node Exporter — exposes host metrics (CPU, memory, disk, network) on port 9100
+- Alloy — scrapes metrics and optionally ships logs to Loki on port 12345
+- OTel Collector — forwards traces to Tempo (optional, `--with-tempo`)
+
+All components run under the `svc_mist` service account. The server stack runs in
+rootless Docker managed by systemd. Everything is controlled via:
+`systemctl start|stop|restart|status mist-server` (server)
+`systemctl start|stop|restart|status mist-alloy` (client)
 
 ---
-Prerequisites & Required Downloads
------------------------------------
-This project is designed for air-gapped environments. Before running any
-installer script, the host OS must have these packages installed:
+Scripts Reference
+-----------------
 
-- `firewalld` — for managing open ports
-- `wget`, `curl` — used by the scripts
-- `slirp4netns` — **server only**, required for rootless Docker port forwarding;
-  without it, containers start but ports are unreachable from the host
+| Script | Purpose | Run on |
+|--------|---------|--------|
+| `scripts/download-deps.sh` | Downloads all binaries into `downloads/` | Internet-connected machine |
+| `scripts/create-bundle.sh` | Packages repo + downloads into one `.tar.gz` | Internet-connected machine |
+| `scripts/deploy-server.sh` | Installs and starts the server stack | Server (as root) |
+| `scripts/deploy-client.sh` | Installs monitoring agents | Each client node (as root) |
 
-If any are missing the scripts will abort with a clear error. You can copy their
-RPMs into `downloads/` and run `dnf localinstall -y <rpm>` manually.
+---
+Full Installation Workflow
+--------------------------
 
-**Fetching all dependencies (run on a machine with internet access):**
+### Step 1 — Clone the repo and download dependencies (internet-connected machine)
 
 ```bash
-chmod +x scripts/download-deps.sh
+git clone https://github.com/mscirocco44/mist.git
+cd mist
+chmod +x scripts/*.sh
 ./scripts/download-deps.sh
 ```
 
-This downloads all Docker RPMs, container images, client binaries, and Grafana
-dashboard JSON files into `downloads/`. Once complete, transfer the entire repo
-directory to the air-gapped target and run the deploy scripts from there.
+`download-deps.sh` fetches all Docker RPMs, container image tarballs, client
+binaries, and Grafana dashboard JSON files into `downloads/`. It skips anything
+already present, so it is safe to re-run. Docker must be installed on this machine
+to pull and save container images.
 
-Options:
+Skip flags (if you only need part of it):
 ```
---skip-images    skip pulling/saving Docker container images (requires docker)
+--skip-images    skip Docker image pulls (if you already have the .tar files)
 --skip-rpms      skip downloading Docker and Alloy RPMs
 --skip-client    skip downloading node_exporter and otelcol
 ```
 
-Grafana dashboard JSON files are also committed to `downloads/dashboards/` in
-this repo, so they are available immediately after cloning without running the
-download script.
+### Step 2 — Transfer to the air-gapped environment
 
-**Creating an all-in-one bundle for distribution:**
+**Option A — Direct copy** (if you can SCP/rsync to the target):
+```bash
+rsync -av mist/ root@<server_ip>:/root/mist/
+```
 
-Once `download-deps.sh` has run, package everything into a single tarball and
-upload it to a GitHub Release so others can download one file and deploy:
-
+**Option B — Release bundle** (single file for wider distribution):
 ```bash
 ./scripts/create-bundle.sh v1.0.0
+# Then upload mist-bundle-v1.0.0.tar.gz to GitHub Releases:
 gh release create v1.0.0 --title "Mist v1.0.0"
 gh release upload v1.0.0 mist-bundle-v1.0.0.tar.gz
 ```
+Anyone with access downloads one file, extracts it, and deploys:
+```bash
+tar -xzf mist-bundle-v1.0.0.tar.gz
+cd mist/
+```
 
-Anyone with access to the release downloads one file, extracts it, and runs the
-deploy scripts — no internet required on the target machine.
+### Step 3 — Install prerequisite OS packages (on the server)
 
----
-Ports Opened
-------------
+The following must be installed on the target OS before running the deploy scripts.
+If missing, the scripts will abort and tell you which packages are needed.
+
 **Server:**
-- `9090/tcp` — Prometheus
-- `3000/tcp` — Grafana
-- `3100/tcp` — Loki (if `--with-loki`)
-- `3200/tcp` — Tempo HTTP (if `--with-tempo`)
-- `4317/tcp` — Tempo OTLP gRPC (if `--with-tempo`)
+- `firewalld` — port management
+- `curl`, `wget` — used by scripts
+- `slirp4netns` — **required** for rootless Docker port forwarding; without it
+  containers start but no ports are reachable from outside
 
 **Client:**
-- `9100/tcp` — Node Exporter metrics
-- `12345/tcp` — Alloy metrics endpoint
+- `firewalld`, `curl`, `wget`
+
+Install from RPM if no internet:
+```bash
+dnf localinstall -y <package>.rpm
+```
+
+### Step 4 — Deploy the server
+
+Create `configs/hosts.txt` with one client IP or hostname per line:
+```
+192.168.1.10
+192.168.1.11
+192.168.1.12
+```
+
+Then run:
+```bash
+# Prometheus + Grafana only (minimal):
+sudo ./scripts/deploy-server.sh configs/hosts.txt
+
+# With Loki log aggregation:
+sudo ./scripts/deploy-server.sh --with-loki configs/hosts.txt
+
+# Full stack (Prometheus, Grafana, Loki, Tempo):
+sudo ./scripts/deploy-server.sh --with-loki --with-tempo configs/hosts.txt
+
+# Custom data directory (default is /var/lib/mist):
+sudo ./scripts/deploy-server.sh --with-loki --data-dir /mnt/data configs/hosts.txt
+```
+
+The script will:
+1. Prompt you to select a network interface (sets the displayed server IP)
+2. Prompt for a data directory (or use `--data-dir` to skip)
+3. Install Docker from local RPMs
+4. Set up rootless Docker for the `svc_mist` service account
+5. Load container images from local tarballs
+6. Generate all config files under `/opt/mist-server/`
+7. Auto-provision Grafana datasources and dashboards
+8. Open firewall ports for enabled services
+9. Start the stack via `mist-server.service`
+10. Print a deployment summary with URLs and the exact client deploy command
+
+### Step 5 — Deploy clients
+
+Copy the mist directory to each client node (or use the same bundle), then run
+the command printed at the end of the server deploy. It looks like:
+
+```bash
+sudo ./scripts/deploy-client.sh --with-loki <server_ip>
+```
+
+This installs and starts:
+- `mist-node-exporter` — Node Exporter binary from `downloads/node_exporter*.tar.gz`
+- `mist-alloy` — Alloy agent from `downloads/alloy*.rpm`; if `--with-loki` is passed,
+  Alloy is configured to ship systemd journal logs to `http://<server_ip>:3100`
+- `mist-otelcol` — OTel Collector (only if `--with-tempo`)
+
+Server address is written into config files automatically — no manual editing needed.
+
+---
+Ports Opened by the Scripts
+----------------------------
+**Server (firewalld permanent rules):**
+- `9090/tcp` — Prometheus UI and API
+- `3000/tcp` — Grafana UI
+- `3100/tcp` — Loki log ingestion (if `--with-loki`)
+- `3200/tcp` — Tempo HTTP (if `--with-tempo`)
+- `4317/tcp` — Tempo OTLP gRPC ingestion (if `--with-tempo`)
+
+**Client (firewalld permanent rules):**
+- `9100/tcp` — Node Exporter (scraped by Prometheus)
+- `12345/tcp` — Alloy metrics endpoint (scraped by Prometheus)
 - `4317/tcp` — OTel Collector (if `--with-tempo`)
 
 ---
-Step-by-step Deployment
------------------------
-**Server:**
+Grafana Access
+--------------
+After server deploy, open: `http://<server_ip>:3000`
+Default login: **admin / admin** — Grafana prompts for a password change on first login.
 
-1. Place all RPMs, tarballs, and dashboard JSON files in `downloads/`.
-2. Make scripts executable:
-   ```bash
-   chmod +x scripts/deploy-server.sh
-   ```
-3. Create `configs/hosts.txt` — one client IP or hostname per line.
-4. Run server deploy:
-   ```bash
-   sudo ./scripts/deploy-server.sh --help                                       # show usage
-   sudo ./scripts/deploy-server.sh configs/hosts.txt                            # Prometheus + Grafana only
-   sudo ./scripts/deploy-server.sh --with-loki configs/hosts.txt               # + Loki log aggregation
-   sudo ./scripts/deploy-server.sh --with-loki --with-tempo configs/hosts.txt  # full stack
-   sudo ./scripts/deploy-server.sh --data-dir /mnt/data configs/hosts.txt      # custom data directory
-   ```
-   - The script prompts for a network interface and data directory (default: `/var/lib/mist`).
-     Pass `--data-dir <path>` to skip the prompt.
-   - At the end it prints a deployment summary with URLs and the exact client deploy command to run.
+**Auto-provisioned data sources** (based on deploy flags):
+- Prometheus — always present, set as default
+- Loki — present if `--with-loki` was used
+- Tempo — present if `--with-tempo` was used
 
-**Client:**
+**Auto-provisioned dashboards** (from `downloads/dashboards/`):
+- Node Exporter Full — host CPU, memory, disk, network metrics
+- Alloy overview — agent health and scrape stats
+- Loki logs explorer — log search (if `--with-loki`)
 
-1. Place all RPMs and tarballs in `downloads/`.
-2. Make scripts executable:
-   ```bash
-   chmod +x scripts/deploy-client.sh
-   ```
-3. Run client deploy (use the server IP shown in the server deploy summary):
-   ```bash
-   sudo ./scripts/deploy-client.sh --help                                    # show usage
-   sudo ./scripts/deploy-client.sh <server_ip>                               # Node Exporter + Alloy only
-   sudo ./scripts/deploy-client.sh --with-loki <server_ip>                  # + Loki log shipping
-   sudo ./scripts/deploy-client.sh --with-loki --with-tempo <server_ip>     # + OTel traces to Tempo
-   ```
-   - Server address is written into `/etc/alloy/config.alloy` and `/etc/otel-collector/config.yaml` automatically.
+Dashboards appear immediately under **Dashboards** in the sidebar.
+All Grafana state (dashboards, users, settings) is persisted in
+`<data-dir>/grafana/` and survives restarts and re-deploys.
 
 ---
-Grafana Dashboards & Data Sources
------------------------------------
-Data sources and dashboards are **auto-provisioned** on first start — no manual
-configuration needed.
+Troubleshooting
+---------------
+**Server stack not starting:**
+```bash
+systemctl status mist-server
+journalctl -u mist-server -f
+```
+- Verify `slirp4netns` is installed: `rpm -q slirp4netns`
+- Check Prometheus targets are UP: `http://<server>:9090/targets`
 
-**Data sources** (configured automatically based on install flags):
-- Prometheus — always added as the default data source
-- Loki — added when `--with-loki` was passed to `deploy-server.sh`
-- Tempo — added when `--with-tempo` was passed to `deploy-server.sh`
+**Client services not running:**
+```bash
+systemctl status mist-alloy
+systemctl status mist-node-exporter
+journalctl -u mist-alloy -f
+```
+- Test Node Exporter: `curl http://localhost:9100/metrics | head -20`
+- Test Alloy: `curl http://localhost:12345/metrics | head -20`
 
-**Pre-built dashboards** (provisioned if JSON files were in `downloads/dashboards/` at install time):
-- `dashboard-node-exporter.json` — Node Exporter Full (ID 1860) — host CPU, memory, disk, network
-- `dashboard-loki.json` — Loki logs explorer (ID 12019) — requires `--with-loki`
-- `dashboard-alloy.json` — Alloy overview (ID 21698) — agent health and metrics
-
-1. Open Grafana at `http://<server>:3000` — default login is **admin / admin**.
-   Grafana will prompt you to change the password on first login.
-
-2. Pre-built dashboards appear under **Dashboards** in the sidebar immediately after first start.
-   If no JSON files were present at install time, import them manually:
-   Dashboards → New → Import → enter a dashboard ID → Load → select data source → Import.
-
-3. **Build a custom dashboard**: Dashboards → New → New dashboard → Add visualization.
-   Pick a data source, write a PromQL or LogQL query, choose a panel type, and save.
-
-4. Dashboards and all Grafana state are persisted in `<data-dir>/grafana/`
-   (default `/var/lib/mist/grafana`) and survive container restarts and re-deploys.
+**Loki shows "no data" in Grafana:**
+1. Go to Grafana → Explore → select Loki datasource
+2. Run the query: `{job="systemd-journal"}`
+3. If data appears here, the pre-built dashboard uses different label selectors — use Explore
+4. If no data appears, check Alloy for push errors: `journalctl -u mist-alloy -f`
+5. Make sure `svc_mist` is in the `systemd-journal` group (the client script adds this,
+   but requires a service restart to take effect): `systemctl restart mist-alloy`
 
 ---
-Troubleshooting & Verification
--------------------------------
-**Server:**
-```bash
-systemctl status mist-server                    # stack status
-systemctl restart mist-server                   # restart all containers
-journalctl -u mist-server -f                    # follow service logs
-```
-- Prometheus targets: `http://<server>:9090/targets` — clients should appear as UP
-- Grafana: `http://<server>:3000`
-- If ports are unreachable: verify `slirp4netns` is installed — `rpm -q slirp4netns`
+Updating Components
+-------------------
+To upgrade a container image (e.g. new Grafana version):
 
-**Client:**
-```bash
-systemctl status mist-alloy                     # Alloy agent status
-systemctl status mist-node-exporter             # Node Exporter status
-curl http://localhost:9100/metrics | head -20   # Node Exporter metrics
-curl http://localhost:12345/metrics | head -20  # Alloy metrics
-journalctl -u mist-alloy -f                     # Alloy logs (check for Loki push errors)
-```
-
-**Loki "no data" in Grafana:**
-- Verify logs are flowing: Grafana → Explore → select Loki → run `{job="systemd-journal"}`
-- If that returns data, the pre-built dashboard query may use different labels — use Explore directly
-- If no data, check Alloy logs for push errors: `journalctl -u mist-alloy -f`
-- Ensure `svc_mist` is in the `systemd-journal` group (the client script does this, but the
-  service must be restarted after the group change): `systemctl restart mist-alloy`
-
----
-Upgrade / Update
-----------------
-Replace the RPM or tarball in `downloads/`, then use `--update` to reload a specific image:
+1. Update the version in `scripts/download-deps.sh`
+2. Re-run `download-deps.sh` to fetch the new image tarball
+3. Run the update command on the server — this loads the new image and restarts only
+   the affected container without touching any config or data:
 
 ```bash
-sudo ./scripts/deploy-server.sh --update grafana      # reload Grafana image only
-sudo ./scripts/deploy-server.sh --update prometheus   # reload Prometheus image only
-sudo ./scripts/deploy-server.sh --update all          # reload all images
+sudo ./scripts/deploy-server.sh --update grafana      # Grafana only
+sudo ./scripts/deploy-server.sh --update prometheus   # Prometheus only
+sudo ./scripts/deploy-server.sh --update all          # all images
 ```
 
-All containers use `restart: unless-stopped` and rootless Docker is set to linger,
-so the stack starts automatically at boot without any extra configuration.
+To update client binaries (Alloy, node_exporter):
+1. Replace the file in `downloads/`
+2. Re-run `deploy-client.sh` on each client — it reinstalls the binary and restarts the service
 
 ---
 Configuration Files Created
 ----------------------------
-The deploy scripts create and manage the following files:
-
-**Server** (app config under `/opt/mist-server/`):
+**Server — app config (`/opt/mist-server/`):**
 
 | File | Description |
 |------|-------------|
-| `docker-compose.yml` | Compose stack definition (copied from `configs/docker-compose.yml.template`) |
-| `.env` | Sets `MIST_DATA_DIR` for volume mounts |
-| `prometheus/prometheus.yml` | Prometheus scrape config generated from hosts file |
+| `docker-compose.yml` | Container stack definition |
+| `.env` | Sets `MIST_DATA_DIR` for Docker volume paths |
+| `prometheus/prometheus.yml` | Scrape targets generated from hosts file |
 | `loki/loki-config.yaml` | Loki config (if `--with-loki`) |
 | `tempo/tempo-config.yaml` | Tempo config (if `--with-tempo`) |
-| `grafana/provisioning/datasources/datasources.yaml` | Auto-generated Grafana datasource list |
+| `grafana/provisioning/datasources/datasources.yaml` | Auto-generated datasource list |
 | `grafana/provisioning/dashboards/dashboards.yaml` | Dashboard provider config |
 | `grafana/dashboards/dashboard-*.json` | Pre-built dashboard JSON files |
 
-**Server** (system):
+**Server — system:**
 
 | File | Description |
 |------|-------------|
-| `/etc/systemd/system/mist-server.service` | Systemd unit wrapping `docker compose` as `svc_mist` |
+| `/etc/systemd/system/mist-server.service` | Systemd unit that runs `docker compose` as `svc_mist` |
 
-**Server** (data directories, default `/var/lib/mist/`):
+**Server — persistent data (default `/var/lib/mist/`):**
 
 | Path | Contents |
 |------|----------|
-| `prometheus/` | Prometheus TSDB data |
-| `grafana/` | Grafana database, plugins, sessions |
-| `loki/` | Loki chunks, index, WAL (if `--with-loki`) |
-| `tempo/` | Tempo trace storage (if `--with-tempo`) |
+| `prometheus/` | Prometheus time-series database |
+| `grafana/` | Grafana database, users, saved dashboards |
+| `loki/` | Log chunks, index, WAL |
+| `tempo/` | Trace storage |
 
-**Client**:
+**Client:**
 
 | File | Description |
 |------|-------------|
-| `/etc/alloy/config.alloy` | Alloy River config (Loki section appended if `--with-loki`) |
-| `/var/lib/alloy/` | Alloy working directory |
-| `/usr/local/bin/node_exporter` | Node Exporter binary extracted from tarball |
-| `/etc/otel-collector/config.yaml` | OTel Collector config (if `--with-tempo`) |
+| `/etc/alloy/config.alloy` | Alloy config (Loki block added if `--with-loki`) |
+| `/usr/local/bin/node_exporter` | Node Exporter binary |
 | `/usr/local/bin/otelcol` | OTel Collector binary (if `--with-tempo`) |
+| `/etc/otel-collector/config.yaml` | OTel Collector config (if `--with-tempo`) |
 | `/etc/systemd/system/mist-alloy.service` | Alloy systemd unit |
 | `/etc/systemd/system/mist-node-exporter.service` | Node Exporter systemd unit |
 | `/etc/systemd/system/mist-otelcol.service` | OTel Collector systemd unit (if `--with-tempo`) |
