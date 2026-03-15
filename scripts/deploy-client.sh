@@ -138,15 +138,17 @@ mkdir -p /etc/alloy /var/lib/alloy
 chown svc_mist:svc_mist /etc/alloy /var/lib/alloy
 restorecon -Rv /etc/alloy
 
-if [ ! -f "/etc/alloy/config.alloy" ]; then
-    tmpl=$(<"$BASE_DIR/configs/config.alloy.template")
-    printf '%s' "$tmpl" > /etc/alloy/config.alloy
-    if [ "$USE_LOKI" = yes ]; then
-        loki_tmpl=$(<"$BASE_DIR/configs/config.alloy.loki.template")
-        printf '%s' "${loki_tmpl//<server-ip>/$SERVER}" >> /etc/alloy/config.alloy
-        # svc_mist needs journal read access to ship logs
-        usermod -aG systemd-journal svc_mist || true
-    fi
+# Always write the Mist Alloy config — the RPM installs a default config.alloy
+# that must be overwritten, otherwise Alloy runs with the wrong configuration.
+tmpl=$(<"$BASE_DIR/configs/config.alloy.template")
+printf '%s' "$tmpl" > /etc/alloy/config.alloy
+if [ "$USE_LOKI" = yes ]; then
+    loki_tmpl=$(<"$BASE_DIR/configs/config.alloy.loki.template")
+    printf '%s' "${loki_tmpl//<server-ip>/$SERVER}" >> /etc/alloy/config.alloy
+fi
+# svc_mist needs journal read access whenever Loki log shipping is enabled
+if [ "$USE_LOKI" = yes ]; then
+    usermod -aG systemd-journal svc_mist || true
 fi
 
 cat > /etc/systemd/system/mist-alloy.service <<'UNIT'
