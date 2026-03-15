@@ -446,8 +446,44 @@ done
 firewall-cmd --reload
 
 # Prometheus config — always regenerated from hosts file
+# Hostnames are resolved to IPs here on the host so that the Prometheus
+# container (which uses Docker's internal DNS, not the host's) can reach them.
 PROM_YML="$MIST_DIR/prometheus/prometheus.yml"
 [ -f "$PROM_YML" ] && cp "$PROM_YML" "$PROM_YML.bak"
+
+# Build a deduplicated list of resolved IPs from the hosts file.
+# Skips blank lines, comments, and localhost/loopback entries.
+resolve_hosts() {
+    local port="$1"
+    while IFS= read -r host; do
+        [[ -z "$host" || "$host" == \#* ]] && continue
+        # strip inline comments
+        host="${host%%#*}"
+        host="${host// /}"
+        [[ -z "$host" ]] && continue
+        # skip localhost / loopback — the server is not a client
+        if [[ "$host" == "localhost" || "$host" == "127."* || "$host" == "::1" ]]; then
+            log "  skipping loopback entry: $host"
+            continue
+        fi
+        # if already an IP, use it directly
+        if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "        - \"${host}:${port}\""
+            continue
+        fi
+        # resolve hostname → IP so it works inside the Docker container
+        local ip
+        ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}')
+        if [[ -n "$ip" ]]; then
+            log "  resolved $host → $ip"
+            echo "        - \"${ip}:${port}\""
+        else
+            log "  WARNING: cannot resolve '$host' — using hostname directly (may fail inside container)"
+            echo "        - \"${host}:${port}\""
+        fi
+    done < "$HOSTS_FILE"
+}
+
 cat > "$PROM_YML" <<YAML
 global:
   scrape_interval: 15s
@@ -457,20 +493,14 @@ scrape_configs:
     static_configs:
       - targets:
 YAML
-while read -r host; do
-  [ -z "$host" ] && continue
-  echo "        - \"${host}:9100\"" >> "$PROM_YML"
-done < "$HOSTS_FILE"
+resolve_hosts 9100 >> "$PROM_YML"
 cat >> "$PROM_YML" <<YAML
 
   - job_name: 'alloy'
     static_configs:
       - targets:
 YAML
-while read -r host; do
-  [ -z "$host" ] && continue
-  echo "        - \"${host}:12345\"" >> "$PROM_YML"
-done < "$HOSTS_FILE"
+resolve_hosts 12345 >> "$PROM_YML"
 chown svc_mist:svc_mist "$PROM_YML"
 
 # Verify docker compose is reachable before creating the service
