@@ -426,7 +426,12 @@ dashboards=(node-exporter alloy)
 for dash in "${dashboards[@]}"; do
   src="$DOWNLOAD_DIR/dashboards/dashboard-${dash}.json"
   if [ -f "$src" ]; then
-    cp "$src" "$MIST_DIR/grafana/dashboards/dashboard-${dash}.json"
+    dest="$MIST_DIR/grafana/dashboards/dashboard-${dash}.json"
+    cp "$src" "$dest"
+    # Community dashboards use ${DS_*} datasource template variables that only
+    # resolve when imported via the UI. Replace them with our provisioned names
+    # so file-provisioned dashboards work without manual intervention.
+    sed -i 's/\${DS_LOKI}/Loki/g; s/\${DS_PROMETHEUS}/Prometheus/g; s/\${DS_TEMPO}/Tempo/g' "$dest"
     log "Installed dashboard: dashboard-${dash}.json"
   fi
 done
