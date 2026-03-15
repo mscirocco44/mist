@@ -80,11 +80,17 @@ fi
 
 # --- Container images ---
 if [ "$SKIP_IMAGES" = no ]; then
-    if ! command -v docker >/dev/null 2>&1; then
-        echo "ERROR: docker not found — cannot pull images. Use --skip-images to skip." >&2
+    if command -v skopeo >/dev/null 2>&1; then
+        PULL_CMD=skopeo
+    elif command -v docker >/dev/null 2>&1; then
+        PULL_CMD=docker
+    else
+        echo "ERROR: neither skopeo nor docker found — cannot pull images." >&2
+        echo "  Install skopeo (no daemon required): sudo dnf install -y skopeo" >&2
+        echo "  Or skip images entirely:             --skip-images" >&2
         exit 1
     fi
-    log "Pulling and saving container images (this may take a while)..."
+    log "Pulling and saving container images via $PULL_CMD (this may take a while)..."
     for spec in \
         "prom/prometheus:latest prometheus.tar" \
         "grafana/grafana:latest grafana.tar" \
@@ -96,6 +102,9 @@ if [ "$SKIP_IMAGES" = no ]; then
         dest="$DL/$tarfile"
         if [ -f "$dest" ]; then
             log "  already exists: $tarfile"
+        elif [ "$PULL_CMD" = skopeo ]; then
+            log "  pulling $image → $tarfile"
+            skopeo copy "docker://$image" "docker-archive:${dest}:${image}"
         else
             log "  pulling $image → $tarfile"
             docker pull "$image"
