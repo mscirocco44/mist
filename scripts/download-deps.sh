@@ -85,10 +85,16 @@ if [ "$SKIP_IMAGES" = no ]; then
     elif command -v docker >/dev/null 2>&1; then
         PULL_CMD=docker
     else
-        echo "ERROR: neither skopeo nor docker found — cannot pull images." >&2
-        echo "  Install skopeo (no daemon required): sudo dnf install -y skopeo" >&2
-        echo "  Or skip images entirely:             --skip-images" >&2
-        exit 1
+        log "skopeo not found — attempting to install via dnf..."
+        if dnf install -y skopeo >/dev/null 2>&1; then
+            log "skopeo installed successfully."
+            PULL_CMD=skopeo
+        else
+            echo "ERROR: skopeo not found and automatic install failed." >&2
+            echo "  Try manually: sudo dnf install -y skopeo" >&2
+            echo "  Or skip images: --skip-images" >&2
+            exit 1
+        fi
     fi
     log "Pulling and saving container images via $PULL_CMD (this may take a while)..."
     for spec in \
