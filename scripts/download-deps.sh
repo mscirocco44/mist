@@ -124,15 +124,23 @@ log "Downloading Grafana dashboard JSON files..."
 declare -A dashboards=(
     ["dashboard-node-exporter.json"]="1860"
     ["dashboard-loki.json"]="12019"
-    ["dashboard-alloy.json"]="21698"
+    ["dashboard-alloy.json"]="20033"
 )
+DASHBOARD_ERRORS=0
 for filename in "${!dashboards[@]}"; do
     id="${dashboards[$filename]}"
     dest="$DL/dashboards/$filename"
     [ -f "$dest" ] && log "  already exists: $filename" && continue
     log "  dashboard $id → $filename"
-    curl -fsSL "https://grafana.com/api/dashboards/${id}/revisions/latest/download" -o "$dest"
+    if curl -fsSL "https://grafana.com/api/dashboards/${id}/revisions/latest/download" -o "$dest"; then
+        : # success
+    else
+        log "  WARNING: failed to download dashboard $id ($filename) — skipping (download manually from grafana.com/grafana/dashboards/$id)"
+        rm -f "$dest"
+        DASHBOARD_ERRORS=$((DASHBOARD_ERRORS + 1))
+    fi
 done
+[ "$DASHBOARD_ERRORS" -gt 0 ] && log "WARNING: $DASHBOARD_ERRORS dashboard(s) failed to download — check IDs above."
 
 log "All dependencies downloaded to $DL"
 log "Transfer the full repo directory to your air-gapped machine and run deploy-server.sh / deploy-client.sh"
