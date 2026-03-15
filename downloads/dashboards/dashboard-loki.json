@@ -7,14 +7,6 @@
       "type": "datasource",
       "pluginId": "loki",
       "pluginName": "Loki"
-    },
-    {
-      "name": "DS_PROMETHEUS",
-      "label": "Prometheus",
-      "description": "",
-      "type": "datasource",
-      "pluginId": "prometheus",
-      "pluginName": "Prometheus"
     }
   ],
   "__requires": [
@@ -22,7 +14,7 @@
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
-      "version": "6.7.0"
+      "version": "8.0.0"
     },
     {
       "type": "panel",
@@ -41,24 +33,11 @@
       "id": "loki",
       "name": "Loki",
       "version": "1.0.0"
-    },
-    {
-      "type": "datasource",
-      "id": "prometheus",
-      "name": "Prometheus",
-      "version": "1.0.0"
-    },
-    {
-      "type": "panel",
-      "id": "text",
-      "name": "Text",
-      "version": ""
     }
   ],
   "annotations": {
     "list": [
       {
-        "$$hashKey": "object:75",
         "builtIn": 1,
         "datasource": "-- Grafana --",
         "enable": true,
@@ -70,10 +49,8 @@
     ]
   },
   "editable": true,
-  "gnetId": 12019,
   "graphTooltip": 0,
   "id": null,
-  "iteration": 1586288900167,
   "links": [],
   "panels": [
     {
@@ -117,7 +94,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "sum(count_over_time({namespace=\"$namespace\", instance=~\"$pod\"} |~ \"$search\"[$__interval]))",
+          "expr": "sum(count_over_time({job=\"systemd-journal\", host=\"$host\", unit=~\"$unit\", level=~\"$level\"} |~ \"$search\" [$__interval]))",
           "refId": "A"
         }
       ],
@@ -141,7 +118,6 @@
       },
       "yaxes": [
         {
-          "$$hashKey": "object:168",
           "format": "short",
           "label": null,
           "logBase": 1,
@@ -150,7 +126,6 @@
           "show": false
         },
         {
-          "$$hashKey": "object:169",
           "format": "short",
           "label": null,
           "logBase": 1,
@@ -182,7 +157,7 @@
       },
       "targets": [
         {
-          "expr": "{namespace=\"$namespace\", instance=~\"$pod\"} |~ \"$search\"",
+          "expr": "{job=\"systemd-journal\", host=\"$host\", unit=~\"$unit\", level=~\"$level\"} |~ \"$search\"",
           "refId": "A"
         }
       ],
@@ -190,26 +165,9 @@
       "timeShift": null,
       "title": "Logs Panel",
       "type": "logs"
-    },
-    {
-      "content": "<div style=\"text-align:center\"> For Grafana Loki blog example </div>\n\n\n",
-      "datasource": null,
-      "gridPos": {
-        "h": 3,
-        "w": 24,
-        "x": 0,
-        "y": 28
-      },
-      "id": 4,
-      "mode": "html",
-      "timeFrom": null,
-      "timeShift": null,
-      "title": "",
-      "transparent": true,
-      "type": "text"
     }
   ],
-  "schemaVersion": 22,
+  "schemaVersion": 27,
   "style": "dark",
   "tags": [],
   "templating": {
@@ -217,73 +175,81 @@
       {
         "allValue": null,
         "current": {},
-        "datasource": "${DS_PROMETHEUS}",
-        "definition": "label_values(kube_pod_info, namespace)",
+        "datasource": "${DS_LOKI}",
+        "definition": "label_values({job=\"systemd-journal\"}, host)",
         "hide": 0,
         "includeAll": false,
-        "index": -1,
-        "label": null,
+        "label": "Host",
         "multi": false,
-        "name": "namespace",
+        "name": "host",
         "options": [],
-        "query": "label_values(kube_pod_info, namespace)",
-        "refresh": 1,
+        "query": "label_values({job=\"systemd-journal\"}, host)",
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
-        "sort": 0,
-        "tagValuesQuery": "",
-        "tags": [],
-        "tagsQuery": "",
-        "type": "query",
-        "useTags": false
+        "sort": 1,
+        "type": "query"
       },
       {
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {},
-        "datasource": "${DS_PROMETHEUS}",
-        "definition": "label_values(container_network_receive_bytes_total{namespace=~\"$namespace\"},pod)",
+        "datasource": "${DS_LOKI}",
+        "definition": "label_values({job=\"systemd-journal\", host=\"$host\"}, unit)",
         "hide": 0,
         "includeAll": true,
-        "index": -1,
-        "label": null,
+        "label": "Unit",
         "multi": true,
-        "name": "pod",
+        "name": "unit",
         "options": [],
-        "query": "label_values(container_network_receive_bytes_total{namespace=~\"$namespace\"},pod)",
-        "refresh": 1,
+        "query": "label_values({job=\"systemd-journal\", host=\"$host\"}, unit)",
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
-        "sort": 0,
-        "tagValuesQuery": "",
-        "tags": [],
-        "tagsQuery": "",
-        "type": "query",
-        "useTags": false
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": {},
+        "datasource": "${DS_LOKI}",
+        "definition": "label_values({job=\"systemd-journal\", host=\"$host\"}, level)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Level",
+        "multi": true,
+        "name": "level",
+        "options": [],
+        "query": "label_values({job=\"systemd-journal\", host=\"$host\"}, level)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       },
       {
         "current": {
           "selected": false,
-          "text": "level=warn",
-          "value": "level=warn"
+          "text": "",
+          "value": ""
         },
         "hide": 0,
-        "label": null,
+        "label": "Search",
         "name": "search",
         "options": [
           {
             "selected": true,
-            "text": "level=warn",
-            "value": "level=warn"
+            "text": "",
+            "value": ""
           }
         ],
-        "query": "level=warn",
+        "query": "",
         "skipUrlSync": false,
         "type": "textbox"
       }
     ]
   },
   "time": {
-    "from": "now-30m",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {
@@ -301,11 +267,8 @@
     ]
   },
   "timezone": "",
-  "title": "Loki Dashboard quick search",
+  "title": "Loki Dashboard",
   "uid": "liz0yRCZz",
-  "variables": {
-    "list": []
-  },
   "version": 1,
-  "description": "Loki logs panel with prometheus variables "
+  "description": "Systemd journal logs via Alloy"
 }
