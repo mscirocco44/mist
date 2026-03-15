@@ -461,9 +461,11 @@ resolve_hosts() {
         host="${host%%#*}"
         host="${host// /}"
         [[ -z "$host" ]] && continue
-        # skip localhost / loopback — the server is not a client
+        # localhost/loopback means the server itself — replace with the server's real IP
+        # so the Prometheus container (where localhost = the container) can reach it
         if [[ "$host" == "localhost" || "$host" == "127."* || "$host" == "::1" ]]; then
-            log "  skipping loopback entry: $host" >&2
+            log "  replacing loopback '$host' with server IP $SELECTED_IP" >&2
+            echo "        - \"${SELECTED_IP}:${port}\""
             continue
         fi
         # if already an IP, use it directly
