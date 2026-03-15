@@ -463,7 +463,7 @@ resolve_hosts() {
         [[ -z "$host" ]] && continue
         # skip localhost / loopback — the server is not a client
         if [[ "$host" == "localhost" || "$host" == "127."* || "$host" == "::1" ]]; then
-            log "  skipping loopback entry: $host"
+            log "  skipping loopback entry: $host" >&2
             continue
         fi
         # if already an IP, use it directly
@@ -475,10 +475,10 @@ resolve_hosts() {
         local ip
         ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}')
         if [[ -n "$ip" ]]; then
-            log "  resolved $host → $ip"
+            log "  resolved $host → $ip" >&2
             echo "        - \"${ip}:${port}\""
         else
-            log "  WARNING: cannot resolve '$host' — using hostname directly (may fail inside container)"
+            log "  WARNING: cannot resolve '$host' — using hostname directly (may fail inside container)" >&2
             echo "        - \"${host}:${port}\""
         fi
     done < "$HOSTS_FILE"
