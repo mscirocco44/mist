@@ -1,6 +1,29 @@
 // Log shipping to Loki via systemd journal
+loki.relabel "journal" {
+  forward_to = []
+
+  // Expose hostname so logs from multiple nodes can be distinguished
+  rule {
+    source_labels = ["__journal__hostname"]
+    target_label  = "host"
+  }
+
+  // Expose systemd unit name so logs can be filtered by service
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  // Expose syslog priority as a human-readable level
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
 loki.source.journal "system" {
-  forward_to = [loki.write.mist.receiver]
+  forward_to    = [loki.write.mist.receiver]
+  relabel_rules = loki.relabel.journal.rules
   labels = {
     job = "systemd-journal",
   }
