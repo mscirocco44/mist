@@ -28,6 +28,9 @@ done
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 
+# Version pins — single source of truth used by both RPM download and dashboard download
+ALLOY_VERSION="1.13.2"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DL="$BASE_DIR/downloads"
@@ -51,7 +54,6 @@ if [ "$SKIP_RPMS" = no ]; then
     done
 
     log "Downloading Alloy RPM..."
-    ALLOY_VERSION="1.13.2"
     ALLOY_RPM="alloy-${ALLOY_VERSION}-1.amd64.rpm"
     dest="$DL/$ALLOY_RPM"
     [ -f "$dest" ] || curl -fsSL \
@@ -121,10 +123,11 @@ fi
 
 # --- Grafana dashboard JSON files ---
 log "Downloading Grafana dashboard JSON files..."
+
+# Dashboards sourced from grafana.com community (stable IDs)
 declare -A dashboards=(
     ["dashboard-node-exporter.json"]="1860"
     ["dashboard-loki.json"]="12019"
-    ["dashboard-alloy.json"]="20033"
 )
 DASHBOARD_ERRORS=0
 for filename in "${!dashboards[@]}"; do
@@ -141,6 +144,26 @@ for filename in "${!dashboards[@]}"; do
     fi
 done
 [ "$DASHBOARD_ERRORS" -gt 0 ] && log "WARNING: $DASHBOARD_ERRORS dashboard(s) failed to download — check IDs above."
+
+# Alloy dashboard: sourced directly from the Alloy GitHub release (same version as the RPM)
+# to avoid relying on an unstable grafana.com dashboard ID.
+ALLOY_DASH_DEST="$DL/dashboards/dashboard-alloy.json"
+if [ -f "$ALLOY_DASH_DEST" ]; then
+    log "  already exists: dashboard-alloy.json"
+else
+    log "  downloading Alloy dashboard from GitHub release v${ALLOY_VERSION}..."
+    ALLOY_DASH_ZIP_URL="https://github.com/grafana/alloy/releases/download/v${ALLOY_VERSION}/alloy-mixin-dashboards-v${ALLOY_VERSION}.zip"
+    ALLOY_DASH_TMP=$(mktemp -d)
+    if curl -fsSL "$ALLOY_DASH_ZIP_URL" -o "$ALLOY_DASH_TMP/alloy-dashboards.zip" && \
+       unzip -q "$ALLOY_DASH_TMP/alloy-dashboards.zip" -d "$ALLOY_DASH_TMP"; then
+        cp "$ALLOY_DASH_TMP/dashboards/alloy-resources.json" "$ALLOY_DASH_DEST"
+        log "  dashboard-alloy.json (alloy-resources) saved"
+    else
+        log "  WARNING: failed to download Alloy dashboard — skipping"
+        DASHBOARD_ERRORS=$((DASHBOARD_ERRORS + 1))
+    fi
+    rm -rf "$ALLOY_DASH_TMP"
+fi
 
 log "All dependencies downloaded to $DL"
 log "Transfer the full repo directory to your air-gapped machine and run deploy-server.sh / deploy-client.sh"
