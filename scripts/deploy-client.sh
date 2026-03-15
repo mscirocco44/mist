@@ -169,7 +169,8 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now mist-alloy || true
+systemctl enable mist-alloy
+systemctl restart mist-alloy
 
 for port in 12345; do
     if ! firewall-cmd --permanent --query-port="$port"/tcp >/dev/null 2>&1; then

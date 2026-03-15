@@ -543,7 +543,8 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now mist-server
+systemctl enable mist-server
+systemctl restart mist-server
 
 echo ""
 echo "=========================================="
